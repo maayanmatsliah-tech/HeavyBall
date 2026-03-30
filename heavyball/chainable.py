@@ -1670,7 +1670,9 @@ def _exchange_fsdp_shards(schedule, bucket_lookup, items, tensor_getter, keep_st
         bucket_idx = bucket_lookup[info.param_idx]
         device, dtype = schedule[bucket_idx]
         if flat.device != device or flat.dtype != dtype:
-            raise RuntimeError(f"FSDP bucket mismatch for param {info.param_idx}: expected {(device, dtype)}, got {(flat.device, flat.dtype)}")
+            raise RuntimeError(
+                f"FSDP bucket mismatch for param {info.param_idx}: expected {(device, dtype)}, got {(flat.device, flat.dtype)}"
+            )
         per_bucket[bucket_idx].append((info.owner, info.param_idx, info.offset, flat, shard))
 
     received, states = {}, []
@@ -1692,7 +1694,11 @@ def _exchange_fsdp_shards(schedule, bucket_lookup, items, tensor_getter, keep_st
             for value in (param_idx, offset, flat.numel(), code)
         ]
         payload = [flat for dst_entries in by_dst for _, _, _, flat, _ in dst_entries]
-        send_meta = torch.tensor(meta, dtype=torch.int64, device=device) if meta else torch.empty(0, dtype=torch.int64, device=device)
+        send_meta = (
+            torch.tensor(meta, dtype=torch.int64, device=device)
+            if meta
+            else torch.empty(0, dtype=torch.int64, device=device)
+        )
         send_payload = torch.cat(payload) if payload else torch.empty(0, dtype=dtype, device=device)
 
         recv_meta = _all_to_all_variable(send_meta, recv_meta_splits, send_meta_splits)

@@ -755,12 +755,12 @@ def orthogonalize_grad_to_param(group, update, grad, param):
 def update_by_schedule_free(group, update, grad, param, z):
     # Compute weight_sum once per step, not per param in no-multi_tensor mode.
     if group.get("_sf_step") is not group["step"]:
-        weight = abs(group["lr"]) ** group["weight_lr_power"] * max(group["step"], 1) ** group["r"]
+        weight = abs(group["lr"]) ** group["weight_lr_power"] * group["step"].clamp(min=1) ** group["r"]
         group["weight_sum"] = group.get("weight_sum", 0) + weight
         group["_sf_step"] = group["step"]
 
     weight_sum = group["weight_sum"]
-    weight = abs(group["lr"]) ** group["weight_lr_power"] * max(group["step"], 1) ** group["r"]
+    weight = abs(group["lr"]) ** group["weight_lr_power"] * group["step"].clamp(min=1) ** group["r"]
     try:
         ckp1 = weight / weight_sum
     except ZeroDivisionError:
@@ -881,6 +881,7 @@ def scale_by_adopt(group, update, grad, param, exp_avg, exp_avg_sq):
 
 
 def _init_psgd_kron(state, group, update, grad, param, cached: bool = False, prob: Optional[callable] = None):
+    tmp = utils.get_temporary(group, param) or {}
     Q = utils.init_Q_exprs(
         grad,
         group["precond_init_scale"],
@@ -889,8 +890,8 @@ def _init_psgd_kron(state, group, update, grad, param, cached: bool = False, pro
         group["max_size_triangular"],
         group["min_ndim_triangular"],
         group["memory_save_mode"],
-        getattr(param, "hessian_vector", None),
-        getattr(param, "vector", None),
+        tmp.get("hessian_vector"),
+        tmp.get("vector"),
         dtype=getattr(torch, group["q_dtype"]),
     )
     state["Q"] = utils.triu_to_line(Q) if group["store_triu_as_line"] else Q
@@ -924,6 +925,7 @@ def _init_psgd_pro_kron(state, group, update, grad, param, cached: bool = False,
 
 
 def _init_psgd_lra(state, group, update, grad, param, cached: bool = False, prob: Optional[callable] = None):
+    tmp = utils.get_temporary(group, param) or {}
     state["U"], state["V"], state["d"] = utils.init_lra(
         grad,
         group["param_count"],
@@ -931,8 +933,8 @@ def _init_psgd_lra(state, group, update, grad, param, cached: bool = False, prob
         group["precond_init_scale_scale"],
         group["precond_init_scale_power"],
         group["rank"],
-        getattr(param, "hessian_vector", None),
-        getattr(param, "vector", None),
+        tmp.get("hessian_vector"),
+        tmp.get("vector"),
         dtype=getattr(torch, group["q_dtype"]),
     )
 
@@ -1169,12 +1171,10 @@ def _update_psgd_precond(
     if not group["is_preconditioning"]:
         return
 
-    if utils.hasattr_none(param, "vector"):
-        vector, hessian_vector = param.vector, param.hessian_vector
-        del param.vector
-        del param.hessian_vector
-    else:
+    if (utils.get_temporary(group, param) or {}).get("vector") is None:
         vector, hessian_vector = utils.dampen_grad(grad, group["dampening"])
+    else:
+        vector, hessian_vector = utils.take_temporary(group, param, "vector", "hessian_vector")
 
     precond = utils.psgd_update_precond(
         hessian_vector,
@@ -1298,12 +1298,10 @@ def _update_lra(
     if not group["is_preconditioning"]:
         return utils.multi_flatten((U, 1), (V, 1), (d, 0))
 
-    if utils.hasattr_none(params[0], "hessian_vector"):
-        vector = utils.flatten([p.vector for p in params])
-        hessian_vector = utils.flatten([p.hessian_vector for p in params])
-        for p in params:
-            del p.vector
-            del p.hessian_vector
+    if (utils.get_temporary(group, params[0]) or {}).get("hessian_vector") is not None:
+        vector_hv = [utils.take_temporary(group, p, "vector", "hessian_vector") for p in params]
+        vector = utils.flatten([v for v, _ in vector_hv])
+        hessian_vector = utils.flatten([hv for _, hv in vector_hv])
     else:
         vector, hessian_vector = utils.dampen_multiple(grads)
     precond_step = group["precond_step"] = group.get("precond_step", -1) + 1
@@ -1523,15 +1521,70 @@ def apply_to_idx(fn, idx):
     return _fn
 
 
-class _ShapeInfo:
-    __slots__ = ("orig_shape", "offset", "total", "group", "owner")
+_FSDP_HEADER_WIDTH = 4
+_FSDP_BUCKET_BYTES = 32 << 20
+_FSDP_DTYPE_CODES = {
+    torch.float64: 0,
+    torch.float32: 1,
+    torch.float16: 2,
+    torch.bfloat16: 3,
+    torch.int64: 4,
+    torch.int32: 5,
+    torch.int16: 6,
+    torch.int8: 7,
+    torch.uint8: 8,
+    torch.bool: 9,
+}
 
-    def __init__(self, orig_shape, offset=0, total=None, group=None, owner=None):
+
+class _ShapeInfo:
+    __slots__ = ("orig_shape", "offset", "total", "group", "owner", "param_idx")
+
+    def __init__(self, orig_shape, offset=0, total=None, group=None, owner=None, param_idx=None):
         self.orig_shape = orig_shape
         self.offset = offset
         self.total = total if total is not None else math.prod(orig_shape)
         self.group = group
         self.owner = owner
+        self.param_idx = param_idx
+
+
+class _FSDPBucket:
+    __slots__ = ("device", "dtype", "send_entries", "send_splits", "recv_entries", "recv_splits")
+
+    def __init__(self, device, dtype, send_entries, send_splits, recv_entries, recv_splits):
+        self.device = device
+        self.dtype = dtype
+        self.send_entries = send_entries
+        self.send_splits = send_splits
+        self.recv_entries = recv_entries
+        self.recv_splits = recv_splits
+
+
+class _FSDPState:
+    __slots__ = ("items", "buckets")
+
+    def __init__(self, items, buckets):
+        self.items = items
+        self.buckets = buckets
+
+
+def _dtype_code(dtype):
+    if dtype not in _FSDP_DTYPE_CODES:
+        raise TypeError(f"Unsupported FSDP shard dtype: {dtype}")
+    return _FSDP_DTYPE_CODES[dtype]
+
+
+def _assign_fsdp_owners(entries, shard_sizes, world_size):
+    loads = [0] * world_size
+    owners = []
+    for i, (p, _, total, _) in enumerate(entries):
+        active = shard_sizes[i].nonzero().squeeze(-1).tolist()
+        candidates = active or list(range(world_size))
+        owner = min(candidates, key=loads.__getitem__)
+        loads[owner] += total * p.element_size()
+        owners.append(owner)
+    return owners
 
 
 def _detect_orig_shapes(params):
@@ -1554,8 +1607,6 @@ def _detect_orig_shapes(params):
         for param, spi, shape in zip(obj._params, obj._shard_param_infos, obj._shapes):
             lookup[id(param)] = (tuple(shape), spi)
 
-    _dist = torch.distributed.is_initialized() and torch.distributed.get_world_size() > 1
-
     # optimizer param order is stable across ranks
     fsdp_entries = [
         (p, s, math.prod(s), spi)
@@ -1563,47 +1614,178 @@ def _detect_orig_shapes(params):
         for s, spi in [lookup.get(id(p), (None, None))]
         if id(p) in fsdp_ids and s is not None
     ]
-
-    groups = {}
-    if _dist and fsdp_entries:
-        rank = torch.distributed.get_rank()
-        ws = torch.distributed.get_world_size()
-        n = len(fsdp_entries)
-        flags = torch.zeros(n, ws, dtype=torch.int32, device=fsdp_entries[0][0].device)
-        for i, (p, orig, total, spi) in enumerate(fsdp_entries):
-            if spi.in_shard and spi.numel_in_shard is not None and spi.numel_in_shard < total:
-                flags[i, rank] = 1
-        torch.distributed.all_reduce(flags)
-        pg_cache = {}
-        for i in range(n):
-            ranks = flags[i].nonzero().squeeze(-1).tolist()
-            if len(ranks) >= 2:
-                key = tuple(ranks)
-                if key not in pg_cache:
-                    pg_cache[key] = torch.distributed.new_group(ranks)
-                groups[i] = (pg_cache[key], ranks)
-
-    # owner must be precomputed (different ranks see different subsets in _reshape_params)
     result = {}
-    split_idx = 0
-    for i, (p, orig, total, spi) in enumerate(fsdp_entries):
-        sg = groups.get(i)
-        if sg:
-            pg, ranks = sg
-            owner = ranks[split_idx % len(ranks)]
-            split_idx += 1
-            if spi.in_shard:
-                result[id(p)] = _ShapeInfo(orig, spi.intra_param_start_idx, total, pg, owner)
-        elif spi.in_shard:
-            result[id(p)] = _ShapeInfo(orig, spi.intra_param_start_idx, total)
+    ws = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+    if ws > 1 and fsdp_entries:
+        rank = torch.distributed.get_rank()
+        shard_sizes = torch.zeros(len(fsdp_entries), ws, dtype=torch.int64, device=fsdp_entries[0][0].device)
+        for i, (p, _, _, spi) in enumerate(fsdp_entries):
+            shard_sizes[i, rank] = p.numel() if spi.in_shard else 0
+        torch.distributed.all_reduce(shard_sizes)
+        owners = _assign_fsdp_owners(fsdp_entries, shard_sizes, ws)
+    else:
+        owners = [None] * len(fsdp_entries)
+    for param_idx, ((p, orig, total, spi), owner) in enumerate(zip(fsdp_entries, owners)):
+        offset = 0 if spi.intra_param_start_idx is None else spi.intra_param_start_idx
+        result[id(p)] = _ShapeInfo(orig, offset, total, owner=owner, param_idx=param_idx)
     return result
 
 
-def _reduce_gather(shard, offset, total, pg, dst):
-    full = shard.new_zeros(total)
-    full[offset : offset + shard.numel()] = shard
-    torch.distributed.reduce(full, dst=dst, group=pg)
-    return full
+def _exchange_split_sizes(splits, device):
+    send = torch.tensor(splits, dtype=torch.int64, device=device)
+    recv = torch.empty_like(send)
+    torch.distributed.all_to_all_single(recv, send)
+    return recv.tolist()
+
+
+def _all_to_all_variable(sendbuf, recv_splits, send_splits):
+    recv = sendbuf.new_empty(sum(recv_splits))
+    torch.distributed.all_to_all_single(recv, sendbuf, output_split_sizes=recv_splits, input_split_sizes=send_splits)
+    return recv
+
+
+def _fsdp_bucket_schedule(items):
+    buckets, current, lookup = [], {}, {}
+    for p, info, _ in items:
+        key = (p.device, p.dtype)
+        idx = current.get(key)
+        size = info.total * p.element_size()
+        if idx is None or (buckets[idx][2] and buckets[idx][2] + size > _FSDP_BUCKET_BYTES):
+            idx = len(buckets)
+            buckets.append([p.device, p.dtype, 0])
+            current[key] = idx
+        buckets[idx][2] += size
+        lookup[info.param_idx] = idx
+    return [(device, dtype) for device, dtype, _ in buckets], lookup
+
+
+def _exchange_fsdp_shards(schedule, bucket_lookup, items, tensor_getter, keep_state=False):
+    ws = torch.distributed.get_world_size()
+    per_bucket = [[] for _ in schedule]
+    for p, info, shard in items:
+        tensor = tensor_getter(p, shard)
+        if tensor is None or tensor.numel() == 0:
+            continue
+        flat = tensor.reshape(-1)
+        bucket_idx = bucket_lookup[info.param_idx]
+        device, dtype = schedule[bucket_idx]
+        if flat.device != device or flat.dtype != dtype:
+            raise RuntimeError(f"FSDP bucket mismatch for param {info.param_idx}: expected {(device, dtype)}, got {(flat.device, flat.dtype)}")
+        per_bucket[bucket_idx].append((info.owner, info.param_idx, info.offset, flat, shard))
+
+    received, states = {}, []
+    for (device, dtype), bucket_entries in zip(schedule, per_bucket):
+        by_dst = [[] for _ in range(ws)]
+        for entry in bucket_entries:
+            by_dst[entry[0]].append(entry)
+
+        send_meta_splits = [len(dst_entries) * _FSDP_HEADER_WIDTH for dst_entries in by_dst]
+        send_payload_splits = [sum(flat.numel() for _, _, _, flat, _ in dst_entries) for dst_entries in by_dst]
+        recv_meta_splits = _exchange_split_sizes(send_meta_splits, device)
+        recv_payload_splits = _exchange_split_sizes(send_payload_splits, device)
+
+        code = _dtype_code(dtype)
+        meta = [
+            value
+            for dst_entries in by_dst
+            for _, param_idx, offset, flat, _ in dst_entries
+            for value in (param_idx, offset, flat.numel(), code)
+        ]
+        payload = [flat for dst_entries in by_dst for _, _, _, flat, _ in dst_entries]
+        send_meta = torch.tensor(meta, dtype=torch.int64, device=device) if meta else torch.empty(0, dtype=torch.int64, device=device)
+        send_payload = torch.cat(payload) if payload else torch.empty(0, dtype=dtype, device=device)
+
+        recv_meta = _all_to_all_variable(send_meta, recv_meta_splits, send_meta_splits)
+        recv_entries = [[] for _ in range(ws)]
+        meta_offset = 0
+        for src, count in enumerate(recv_meta_splits):
+            if count == 0:
+                continue
+            if count % _FSDP_HEADER_WIDTH:
+                raise RuntimeError(f"Malformed FSDP metadata split: {count}")
+            rows = recv_meta[meta_offset : meta_offset + count].view(-1, _FSDP_HEADER_WIDTH).cpu().tolist()
+            meta_offset += count
+            for param_idx, offset, length, got in rows:
+                if got != code:
+                    raise RuntimeError(f"FSDP dtype mismatch for bucket {dtype}: expected {code}, got {got}")
+                recv_entries[src].append((param_idx, offset, length))
+
+        recv_payload = _all_to_all_variable(send_payload, recv_payload_splits, send_payload_splits)
+        payload_offset = 0
+        for src_entries in recv_entries:
+            for param_idx, offset, length in src_entries:
+                chunk = recv_payload[payload_offset : payload_offset + length]
+                received.setdefault(param_idx, []).append((offset, chunk))
+                payload_offset += length
+        if payload_offset != recv_payload.numel():
+            raise RuntimeError("FSDP payload unpack mismatch")
+
+        if keep_state:
+            states.append(_FSDPBucket(device, dtype, by_dst, send_payload_splits, recv_entries, recv_payload_splits))
+
+    return received, states
+
+
+def _reshape_fsdp_params(items):
+    rank = torch.distributed.get_rank()
+    schedule, bucket_lookup = _fsdp_bucket_schedule(items)
+    params, buckets = _exchange_fsdp_shards(schedule, bucket_lookup, items, lambda _, shard: shard, keep_state=True)
+    grads, _ = _exchange_fsdp_shards(schedule, bucket_lookup, items, lambda p, _: p.grad)
+
+    for p, info, shard in items:
+        p.grad = None
+        if info.owner != rank:
+            continue
+
+        pieces = params.get(info.param_idx, ())
+        total = sum(chunk.numel() for _, chunk in pieces)
+        if total != info.total:
+            raise RuntimeError(f"FSDP parameter assembly mismatch for param {info.param_idx}: {total} != {info.total}")
+
+        full = shard.new_empty(info.total)
+        for offset, chunk in pieces:
+            full[offset : offset + chunk.numel()].copy_(chunk)
+        p.data = full.view(info.orig_shape)
+
+        grad_pieces = grads.get(info.param_idx, ())
+        if not grad_pieces:
+            continue
+        grad_total = sum(chunk.numel() for _, chunk in grad_pieces)
+        if grad_total != info.total:
+            raise RuntimeError(f"FSDP grad assembly mismatch for param {info.param_idx}: {grad_total} != {info.total}")
+        grad = full.new_empty(info.total, dtype=grad_pieces[0][1].dtype)
+        for offset, chunk in grad_pieces:
+            grad[offset : offset + chunk.numel()].copy_(chunk)
+        p.grad = grad.view(info.orig_shape)
+
+    return _FSDPState(items, buckets)
+
+
+def _restore_fsdp_params(state):
+    by_param = {info.param_idx: (p, info, shard) for p, info, shard in state.items}
+    for bucket in state.buckets:
+        payload = []
+        for dst, recv_entries in enumerate(bucket.recv_entries):
+            for param_idx, offset, length in recv_entries:
+                p, info, _ = by_param[param_idx]
+                flat = p.data.reshape(-1)
+                if flat.numel() != info.total:
+                    raise RuntimeError(f"FSDP return path expects full param {param_idx}, got {flat.numel()}")
+                payload.append(flat[offset : offset + length])
+        send_payload = torch.cat(payload) if payload else torch.empty(0, dtype=bucket.dtype, device=bucket.device)
+        recv_payload = _all_to_all_variable(send_payload, bucket.send_splits, bucket.recv_splits)
+
+        payload_offset = 0
+        for send_entries in bucket.send_entries:
+            for _, _, _, flat, shard in send_entries:
+                shard.copy_(recv_payload[payload_offset : payload_offset + flat.numel()])
+                payload_offset += flat.numel()
+        if payload_offset != recv_payload.numel():
+            raise RuntimeError("FSDP return payload unpack mismatch")
+
+    for p, _, shard in state.items:
+        p.data = shard
+        p.grad = None
 
 
 def _view_param(p, shape):
@@ -1615,57 +1797,55 @@ def _view_param(p, shape):
 def _reshape_params(params, orig_shapes, gather=True):
     if not orig_shapes:
         return [], []
-    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+    dist_ready = torch.distributed.is_initialized() and torch.distributed.get_world_size() > 1
     views, gathers = [], []
 
     for p in params:
         info = orig_shapes.get(id(p))
-        if info is None or p.data.shape == info.orig_shape:
+        if info is None:
             continue
 
-        if info.group is not None and gather:
+        if gather and dist_ready and info.owner is not None:
             shard = p.data
-            full = _reduce_gather(shard, info.offset, info.total, info.group, info.owner)
-            if rank == info.owner:
-                p.data = full.view(info.orig_shape)
-                if p.grad is not None:
-                    p.grad = _reduce_gather(p.grad, info.offset, info.total, info.group, info.owner).view(
-                        info.orig_shape
-                    )
-            else:
-                del full
-                if p.grad is not None:
-                    _reduce_gather(p.grad, info.offset, info.total, info.group, info.owner)
-                p.grad = None
             gathers.append((p, info, shard))
+            continue
+
+        if p.data.shape == info.orig_shape:
+            continue
+
+        orig, numel = info.orig_shape, p.data.numel()
+        if numel == info.total:
+            target = orig
+        elif numel > 0 and len(orig) >= 2:
+            inner = math.prod(orig[1:])
+            target = (numel // inner, *orig[1:]) if numel % inner == 0 else None
         else:
-            orig, numel = info.orig_shape, p.data.numel()
-            if numel == info.total:
-                target = orig
-            elif numel > 0 and len(orig) >= 2:
-                inner = math.prod(orig[1:])
-                target = (numel // inner, *orig[1:]) if numel % inner == 0 else None
-            else:
-                continue
-            if target is not None:
-                flat = p.data.shape
-                _view_param(p, target)
-                views.append((p, flat))
+            continue
+        if target is not None:
+            flat = p.data.shape
+            _view_param(p, target)
+            views.append((p, flat))
+
+    if gathers:
+        gathers = _reshape_fsdp_params(gathers)
 
     return views, gathers
 
 
 def _restore_params(views, gathers):
-    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-    for p, info, shard in gathers:
-        if rank == info.owner:
-            full = p.data.flatten()
-        else:
-            full = shard.new_empty(info.total)
-        torch.distributed.broadcast(full, src=info.owner, group=info.group)
-        shard.copy_(full[info.offset : info.offset + shard.numel()])
-        p.data = shard
-        p.grad = None
+    if isinstance(gathers, _FSDPState):
+        _restore_fsdp_params(gathers)
+    else:
+        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        for p, info, shard in gathers:
+            if rank == info.owner:
+                full = p.data.flatten()
+            else:
+                full = shard.new_empty(info.total)
+            torch.distributed.broadcast(full, src=info.owner, group=info.group)
+            shard.copy_(full[info.offset : info.offset + shard.numel()])
+            p.data = shard
+            p.grad = None
     for p, flat in views:
         _view_param(p, flat)
 
@@ -1868,7 +2048,7 @@ class ChainOpt(utils.StatefulOptimizer):
     def _step(self, group):
         if "base_lr" not in group:
             group["base_lr"] = group["lr"]
-        if "prev_lr" in group and group["prev_lr"] != group["lr"]:
+        if "base_lr" in group and group["base_lr"] != group["lr"]:
             utils.warn_once(
                 f"Learning rate changed between steps. This is an experimental feature and "
                 f"only supported with multi_tensor=True (currently multi_tensor={group['multi_tensor']})."
@@ -1911,10 +2091,10 @@ class ChainOpt(utils.StatefulOptimizer):
         if isinstance(step, torch.Tensor):
             step = step.to(device=p[0].device, dtype=torch.int64)
         else:
-            step = torch.tensor(step, dtype=torch.int64, device=p[0].device)
+            step = utils.scalar_guard(step, p[0])
         group["_group_step"] = group["step"] = step = step + 1
         self.state_(p[0])["step"] = step
-        group["prev_lr"] = group["lr"] = group["base_lr"] * step / max(step, group["warmup_steps"] + 1)
+        group["prev_lr"] = group["lr"] = group["base_lr"] * step / step.clamp(min=group["warmup_steps"] + 1)
 
         if not group["multi_tensor"] or len(p) == 1:
             for param, grad in zip(p, g):
@@ -1923,7 +2103,7 @@ class ChainOpt(utils.StatefulOptimizer):
             self._chain(group, g, p, caution)
 
         group["caution"] = caution
-        group["lr"] = group["prev_lr"]
+        group["lr"] = group["base_lr"]
         group["step"] = None
 
     def _run_chain(self, state, group, g, p, caution):

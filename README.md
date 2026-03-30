@@ -128,9 +128,10 @@ Available modes: `bf16+8`, `bf16+16`, `fp16+8`, `fp16+16`.
 
 HeavyBall works with both DDP and FSDP. First-order optimizers are elementwise and operate directly on FSDP shards with
 no repartitioning. Second-order methods (Muon, SOAP, PSGD) need the full parameter to compute their update, so HeavyBall
-auto-detects FSDP-sharded parameters on the first step and repartitions them: each weight matrix is assigned to one rank
-in round-robin, which reconstructs the full parameter, computes the update, and broadcasts the result. This saves both
-compute and memory compared to DDP-style redundant updates, at the cost of communication.
+auto-detects FSDP-sharded parameters on the first step and repartitions them with a metadata-first `all_to_all_single`
+exchange: each weight matrix is deterministically assigned to one rank, shard metadata is exchanged up front, the owner
+reconstructs the full parameter, computes the update once, and returns the updated shards. This saves both compute and
+memory compared to DDP-style redundant updates, at the cost of communication.
 
 ```python
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP

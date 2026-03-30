@@ -1269,6 +1269,28 @@ def hasattr_none(obj, name):
     return getattr(obj, name, None) is not None
 
 
+def set_temporary(group: dict, tensor: Tensor, **kwargs):
+    if not kwargs:
+        return
+    state = group.setdefault("_tmp", {}).setdefault(id(tensor), {"tensor": tensor})
+    state.update(kwargs)
+
+
+def get_temporary(group: dict, tensor: Tensor):
+    tmp = group.get("_tmp")
+    return None if tmp is None else tmp.get(id(tensor))
+
+
+def take_temporary(group: dict, tensor: Tensor, *keys):
+    state = get_temporary(group, tensor)
+    if state is None:
+        return None if len(keys) == 1 else (None,) * len(keys)
+    out = tuple(state.pop(key, None) for key in keys)
+    if len(state) == 1:
+        group["_tmp"].pop(id(tensor), None)
+    return out[0] if len(keys) == 1 else out
+
+
 class ExactHVPFailed(ValueError):
     pass
 
@@ -1385,21 +1407,29 @@ class StatefulOptimizer(torch.optim.Optimizer):
         should_promote: bool = True,
         raw: bool = False,
     ):
+        tmp = group.get("_tmp")
         for p in group["params"]:
-            grad = getattr(p, "grad", None)
+            if raw:
+                grad = getattr(p, "grad", None)
+                if grad is None and skip_none:
+                    continue
+                p.grad = None
+                yield p, grad
+                continue
+
+            state = None if tmp is None else tmp.get(id(p))
+            grad = None if state is None else state.pop("grad", None)
+            if grad is None:
+                grad = getattr(p, "grad", None)
             if grad is None and skip_none:
                 continue
 
             p.grad = None
 
-            if raw:
-                yield p, grad
-                continue
-
             if group.get("merge_dims", False) and not p.data.is_contiguous():
                 for fmt in (torch.channels_last, torch.channels_last_3d):
                     if p.data.is_contiguous(memory_format=fmt):
-                        p._restore_memory_format = fmt
+                        set_temporary(group, p, restore_memory_format=fmt)
                         break
                 p.data = p.data.contiguous()
 
@@ -1407,20 +1437,23 @@ class StatefulOptimizer(torch.optim.Optimizer):
             for i, pv in enumerate(p_views):
                 self.mapping_inverse[_tensor_key(pv)] = (p, i)
 
-            vector = getattr(p, "vector", None)
-            hessian_vector = getattr(p, "hessian_vector", None)
-            p.vector = None
-            p.hessian_vector = None
-
-            grad, vs, hvs = [
-                [None] * len(p_views) if x is None else merge_group(group, x)  #
-                for x in (grad, vector, hessian_vector)
-            ]
+            if state is None:
+                vector = hessian_vector = None
+            else:
+                vector = state.pop("vector", None)
+                hessian_vector = state.pop("hessian_vector", None)
+                if len(state) == 1:
+                    tmp.pop(id(p), None)
+            grad = itertools.repeat(None, len(p_views)) if grad is None else merge_group(group, grad)
+            vs = itertools.repeat(None, len(p_views)) if vector is None else merge_group(group, vector)
+            hvs = itertools.repeat(None, len(p_views)) if hessian_vector is None else merge_group(group, hessian_vector)
 
             for pv, g, v, hv in zip(p_views, grad, vs, hvs):
                 g = promote_detach(g, should_promote)
-                pv.vector = promote_detach(v, should_promote)
-                pv.hessian_vector = promote_detach(hv, should_promote)
+                v = promote_detach(v, should_promote)
+                hv = promote_detach(hv, should_promote)
+                if v is not None or hv is not None:
+                    set_temporary(group, pv, vector=v, hessian_vector=hv)
                 yield pv, g
 
     def state_size(self) -> int:
@@ -1494,10 +1527,10 @@ class StatefulOptimizer(torch.optim.Optimizer):
         for group in self.param_groups:
             for p, g in self.split_p_and_g_in_group(group, skip_none=True, raw=True):
                 grads.append(g)
-                p.vector = torch.randn_like(p)
-                p.orig = p.data.clone()
+                vector = torch.randn_like(p)
+                set_temporary(group, p, vector=vector, orig=p.data.clone())
                 # scale taken from https://github.com/lixilinx/psgd_torch/blob/1943e66596111e78157ca1b72b31c1dfdf0653ef/preconditioned_stochastic_gradient_descent.py#L2161
-                stochastic_add_(p.data, p.vector, torch.finfo(torch.float32).eps ** 0.5)
+                stochastic_add_(p.data, vector, torch.finfo(torch.float32).eps ** 0.5)
 
         with torch.enable_grad():
             closure()
@@ -1506,22 +1539,22 @@ class StatefulOptimizer(torch.optim.Optimizer):
         # this costs more memory, but the imprecision seems too severe to use the other method
         for group in self.param_groups:
             for p, g in self.split_p_and_g_in_group(group, skip_none=True, raw=True):
-                p.grad = grads.pop(0)
-                stochastic_add_divide_(g, p.grad, -1, torch.finfo(torch.float32).eps ** 0.5)
-                p.hessian_vector = g
-                p.data.copy_(p.orig)
-                del p.orig
+                grad = grads.pop(0)
+                set_temporary(group, p, grad=grad, hessian_vector=g)
+                stochastic_add_divide_(g, grad, -1, torch.finfo(torch.float32).eps ** 0.5)
+                p.data.copy_(take_temporary(group, p, "orig"))
         return loss
 
     def _double_backward_hvp(self, closure):
         with torch.enable_grad(), patch_backward():
             loss = closure()
 
-        params, grads = [], []
+        params, grads, groups = [], [], []
         for group in self.param_groups:
             for p, g in self.split_p_and_g_in_group(group, skip_none=True, raw=True):
                 params.append(p)
                 grads.append(g)
+                groups.append(group)
 
         if not params:
             raise ValueError("No parameter has gradients")
@@ -1534,10 +1567,8 @@ class StatefulOptimizer(torch.optim.Optimizer):
                 raise ExactHVPFailed(str(e.args))
 
         unused = []
-        for p, g, v, hv in zip(params, grads, vs, hvs):
-            p.hessian_vector = detach(hv)
-            p.grad = detach(g)
-            p.vector = detach(v)
+        for group, p, g, v, hv in zip(groups, params, grads, vs, hvs):
+            set_temporary(group, p, grad=detach(g), vector=detach(v), hessian_vector=detach(hv))
             if hv is None:
                 unused.append(list(p.shape))
 
@@ -1591,17 +1622,18 @@ class StatefulOptimizer(torch.optim.Optimizer):
         return self._handle_closure(closure)
 
     def _cleanup_temporary_tensors(self):
-        for real, views in self.mapping.items():
-            fmt = getattr(real, "_restore_memory_format", None)
-            if fmt is not None:
-                del self.mapping_inverse[_tensor_key(real)]
-                real.data = real.data.to(memory_format=fmt)
-                self.mapping_inverse[_tensor_key(real)] = (real, 0)
-                del real._restore_memory_format
-            for tensor in (real, *views):
-                for key in ("grad", "vector", "hessian_vector", "orig"):
-                    if hasattr(tensor, key):
-                        setattr(tensor, key, None)
+        for group in self.param_groups:
+            tmp = group.pop("_tmp", None)
+            if tmp is None:
+                continue
+            for state in tmp.values():
+                fmt = state.get("restore_memory_format")
+                if fmt is None:
+                    continue
+                tensor = state["tensor"]
+                self.mapping_inverse.pop(_tensor_key(tensor), None)
+                tensor.data = tensor.data.to(memory_format=fmt)
+                self.mapping_inverse[_tensor_key(tensor)] = (tensor, 0)
 
     def step(self, closure: Optional[Callable] = None):
         if self.precond_schedule is None:
@@ -2172,10 +2204,10 @@ def update_param_(
         grad = [None] * len(param)
     _compilable_update_(param, update, decay, lr, caution, grad)
 
-
-def precond_schedule(step, precond_scheduler):
-    precond_prob = max(step, 1) ** precond_scheduler[0]
-    precond_prob = math.log10(precond_prob)
+@decorator_knowngood
+def precond_schedule(step: Tensor, precond_scheduler):
+    precond_prob = step.clamp(min=1) ** precond_scheduler[0]
+    precond_prob = torch.log10(precond_prob)
     precond_prob = precond_prob ** precond_scheduler[1] + 1
     return 1 / precond_prob
 

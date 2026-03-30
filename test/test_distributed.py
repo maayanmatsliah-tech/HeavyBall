@@ -50,6 +50,8 @@ _INTEGRATION_OPTS = [
     if n in REPRESENTATIVE_OPTS and n not in _FSDP_SKIP
 ]
 
+_OWNER_EDGE_OPTS = [n for n in ["Muon"] if n in REPRESENTATIVE_OPTS and n not in _FSDP_SKIP]
+
 
 def _set_cache(cache_dir, compile_mode="default"):
     os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache_dir
@@ -101,6 +103,14 @@ def _make_integration_model():
     )
 
 
+def _make_owner_edge_model():
+    return nn.Sequential(
+        nn.Linear(32, 32, bias=False),
+        nn.ReLU(),
+        nn.Linear(32, 1, bias=False),
+    )
+
+
 def _make_data(dim=32, n=4):
     torch.manual_seed(_DATA_SEED)
     return [torch.randn(4, dim, device="cuda") for _ in range(n)]
@@ -116,6 +126,10 @@ def _make_misaligned_data():
 
 def _make_integration_data():
     return _make_data(64, 8)
+
+
+def _make_owner_edge_data():
+    return _make_data(32, 6)
 
 
 def _train(model, opt, data):
@@ -263,7 +277,7 @@ def _assert_close(ref, result, label, rtol=0, atol=0):
             assert False, f"{label}: param {i} diverged beyond 1 ULP ({n} elements, max |diff|={worst:.2e})"
 
 
-def _run_fsdp_test(opt_name, tmp_path, model_fn, data_fn, label):
+def _run_fsdp_test(opt_name, tmp_path, model_fn, data_fn, label, world_size=2, tol=None):
     cache_dir = tempfile.mkdtemp(prefix=f"hb_{label}_{opt_name}_")
     ref_path = str(tmp_path / "ref.pt")
     mp.spawn(_ref_worker, args=(opt_name, ref_path, cache_dir, None, model_fn, data_fn), nprocs=1, join=True)
@@ -271,12 +285,14 @@ def _run_fsdp_test(opt_name, tmp_path, model_fn, data_fn, label):
     result_path = str(tmp_path / "result.pt")
     mp.spawn(
         _fsdp_worker,
-        args=(2, str(tmp_path / "store"), opt_name, result_path, cache_dir, None, model_fn, data_fn),
-        nprocs=2,
+        args=(world_size, str(tmp_path / "store"), opt_name, result_path, cache_dir, None, model_fn, data_fn),
+        nprocs=world_size,
         join=True,
     )
-    tol = dict(rtol=1e-2, atol=1e-4) if opt_name in _FSDP_PSGD else {}
-    _assert_close(ref, torch.load(result_path, weights_only=True), f"{label}/{opt_name}", **tol)
+    base_tol = dict(rtol=1e-2, atol=1e-4) if opt_name in _FSDP_PSGD else {}
+    if tol is not None:
+        base_tol.update({k: max(base_tol.get(k, 0), v) for k, v in tol.items()})
+    _assert_close(ref, torch.load(result_path, weights_only=True), f"{label}/{opt_name}", **base_tol)
 
 
 @pytest.mark.parametrize("opt_name", REPRESENTATIVE_OPTS)
@@ -336,3 +352,16 @@ def test_fsdp_misaligned(opt_name, tmp_path):
 @pytest.mark.parametrize("opt_name", _INTEGRATION_OPTS)
 def test_fsdp_integration(opt_name, tmp_path):
     _run_fsdp_test(opt_name, tmp_path, _make_integration_model, _make_integration_data, "FSDP-integ")
+
+
+@pytest.mark.parametrize("opt_name", _OWNER_EDGE_OPTS)
+def test_fsdp_owner_edge(opt_name, tmp_path):
+    _run_fsdp_test(
+        opt_name,
+        tmp_path,
+        _make_owner_edge_model,
+        _make_owner_edge_data,
+        "FSDP-owner3",
+        world_size=3,
+        tol=dict(atol=5e-8),
+    )

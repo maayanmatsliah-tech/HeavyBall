@@ -656,7 +656,7 @@ def _scion_bias_rms_direction(x: Tensor, eps: float = 1e-8) -> Tensor:
 
 def _scion_spectral_direction(x: Tensor) -> Tensor:
     flat = x.reshape(x.shape[0], -1)
-    inplace_orthogonal_(flat)
+    flat = inplace_orthogonal_(flat)
     normalized = flat.reshape_as(x)
     in_dim = max(flat.shape[1], 1)
     scale = math.sqrt(x.shape[0] / in_dim)
@@ -665,7 +665,7 @@ def _scion_spectral_direction(x: Tensor) -> Tensor:
 
 def _scion_spectral_conv_direction(x: Tensor) -> Tensor:
     flat = x.reshape(x.shape[0], -1)
-    inplace_orthogonal_(flat)
+    flat = inplace_orthogonal_(flat)
     normalized = flat.reshape_as(x)
     out_channels, in_channels = x.shape[:2]
     spatial = math.prod(x.shape[2:]) if x.ndim > 2 else 1
@@ -774,7 +774,7 @@ def _compilable_grafting(magnitude, direction):
 def _compilable_orthogonal_(x: Tensor, mode: str | ZerothPowerMode, out: Tensor | None, scale_mode: str):
     if not isinstance(mode, ZerothPowerMode):
         mode = ZerothPowerMode(mode)
-    if not isinstance(scale_mode, ZerothPowerMode):
+    if not isinstance(scale_mode, OrthoScaleMode):
         scale_mode = OrthoScaleMode(scale_mode)
     if mode == ZerothPowerMode.newtonschulz or x.shape[0] != x.shape[1]:
         y = zeropower_via_newtonschulz5(x, 5)
@@ -2147,17 +2147,17 @@ def stochastic_round_list_(ref: List[Tensor], source: List[Tensor]):
 def stochastic_round_(ref: Tensor, source: Tensor | None = None):
     if source is None:
         source = ref
-    if ref.dtype != torch.bfloat16:
-        return source.to(ref.dtype)
-    if source.dtype == torch.bfloat16:
-        return source
-    if source.dtype in (torch.float16, torch.float32, torch.float64):
-        source = source.to(torch.float32).view(dtype=torch.int32)
-        noise = sum(torch.randint_like(source, low=0, high=(1 << 16)) for _ in range(dither_steps))
-        noise = noise + source - (dither_steps - 1) * (1 << 15)  # center | x - (N-1)*delta/2
-        noise = noise.bitwise_and(-65536)  # FFFF0000 mask, preserves sign+exp+7 mantissa bits
-        return noise.view(dtype=torch.float32).bfloat16()
-    return source.to(ref.dtype)
+        dtype = torch.bfloat16
+    else:
+        dtype = ref.dtype
+    if dtype != torch.bfloat16 or source.dtype not in (torch.float16, torch.float32, torch.float64):
+        return source.to(dtype)
+
+    source = source.to(torch.float32).view(dtype=torch.int32)
+    noise = sum(torch.randint_like(source, low=0, high=(1 << 16)) for _ in range(dither_steps))
+    noise = noise + source - (dither_steps - 1) * (1 << 15)  # center | x - (N-1)*delta/2
+    noise = noise.bitwise_and(-65536)  # FFFF0000 mask, preserves sign+exp+7 mantissa bits
+    return noise.view(dtype=torch.float32).bfloat16()
 
 
 @decorator_knowngood

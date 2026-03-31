@@ -1318,6 +1318,7 @@ class StatefulOptimizer(torch.optim.Optimizer):
     fallback_to_finite_differences: bool = True
     _fallback_enabled: bool = False
     hvp_interval: int = 1  # grad is faster initially, hvp later
+    auto_set_grad_to_none: bool = False
 
     _INSTANCE_ATTRS = (
         "compile_step",
@@ -1413,7 +1414,8 @@ class StatefulOptimizer(torch.optim.Optimizer):
                 grad = getattr(p, "grad", None)
                 if grad is None and skip_none:
                     continue
-                p.grad = None
+                if self.auto_set_grad_to_none:
+                    p.grad = None
                 yield p, grad
                 continue
 
@@ -1424,7 +1426,8 @@ class StatefulOptimizer(torch.optim.Optimizer):
             if grad is None and skip_none:
                 continue
 
-            p.grad = None
+            if self.auto_set_grad_to_none:
+                p.grad = None
 
             if group.get("merge_dims", False) and not p.data.is_contiguous():
                 for fmt in (torch.channels_last, torch.channels_last_3d):

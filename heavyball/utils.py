@@ -2813,15 +2813,15 @@ def max_eigenvalue_spd(A_outer: Tensor, power_iter: int = 4) -> Tensor:
 
     def _inner():
         x = A_outer.index_select(0, max_idx).flatten().contiguous()
-        A = stochastic_round_(A_outer / x_norm)
+        A = promote(A_outer) / x_norm
         x = x / x_norm
 
         def _mv(x):
-            return promote((x.to(A.dtype) @ A.mT) @ A.mT)
+            return promote((x @ A.mT) @ A.mT)
 
         for _ in range(power_iter):
             x = F.normalize(_mv(x), dim=0)
-        return (x @ _mv(x)).to(x_norm.dtype).sqrt() * x_norm
+        return (x @ _mv(x)).sqrt() * x_norm
 
     return cond(x_norm > 0, _inner, lambda: x_norm.squeeze().clone()).squeeze()
 
@@ -3006,14 +3006,13 @@ def _update_lb(ell: Tensor, lb_state: Tensor, beta: Tensor) -> Tensor:
     return ell
 
 
-@decorator
+@functools.partial(decorator_knowngood, fullgraph=False)
 def psgd_update_precond(
     G: Tensor,
     precond_lr: float,
     oq: "TriuOrLine",
     store_triu_as_line: bool,
     beta2: float,
-    ortho_method: Optional[str],
     V: Tensor,
     running_lower_bound: List[Tensor],
     lower_bount_beta: float,

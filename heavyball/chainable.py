@@ -1182,7 +1182,6 @@ def _update_psgd_precond(
         Q,
         group["store_triu_as_line"],
         utils.get_beta2(group),
-        group["ortho_method"],
         vector,
         running_lower_bound,
         group["lower_bound_beta"],

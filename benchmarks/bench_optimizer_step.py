@@ -1,5 +1,3 @@
-import cProfile
-import pstats
 from enum import StrEnum
 from math import prod
 from time import perf_counter
@@ -11,13 +9,18 @@ import heavyball
 
 app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
-DEFAULT_SHAPES = ((128, 128),) * 4 + ((512, 128),) * 2 + ((512,),) * 2 + ((128,),) * 4
+DEFAULT_SHAPES = ((2048, 2048),) * 32
 
 
 class DType(StrEnum):
     float16 = "float16"
     bfloat16 = "bfloat16"
     float32 = "float32"
+
+
+class Library(StrEnum):
+    heavyball = "heavyball"
+    torch = "torch"
 
 
 def parse_shape(text: str) -> tuple[int, ...]:
@@ -31,13 +34,25 @@ def parse_shape(text: str) -> tuple[int, ...]:
 
 
 @app.command()
-def main(optimizer: str = "AdamW", dtype: DType = DType.float32, shape: list[str] | None = None,
-        compile_step: bool = False, update_precond: bool | None = None, steps: int = 300, warmup: int = 20,
-        windows: int = 6, seed: int = 0, ):
+def main(
+    optimizer: str = "AdamW",
+    library: Library = Library.heavyball,
+    dtype: DType = DType.float32,
+    shape: list[str] | None = None,
+    compile_step: bool = False,
+    fused: bool | None = None,
+    update_precond: bool | None = None,
+    steps: int = 300,
+    warmup: int = 20,
+    windows: int = 6,
+    seed: int = 0,
+):
     shapes = DEFAULT_SHAPES if shape is None else tuple(map(parse_shape, shape))
     torch_dtype = getattr(torch, dtype)
-    kwargs = {"compile_step": compile_step}
-    if update_precond is not None:
+    kwargs = {"compile_step": compile_step} if library is Library.heavyball else {}
+    if fused is not None and library is Library.torch:
+        kwargs["fused"] = fused
+    if update_precond is not None and library is Library.heavyball:
         kwargs["preconditioner_update_probability"] = float(update_precond)
 
     gen = torch.Generator(device="cuda").manual_seed(seed)
@@ -47,7 +62,8 @@ def main(optimizer: str = "AdamW", dtype: DType = DType.float32, shape: list[str
         param.grad = torch.randn(dims, device="cuda", dtype=torch_dtype, generator=gen)
         params.append(param)
 
-    step = getattr(heavyball, optimizer)(params, **kwargs).step
+    module = heavyball if library is Library.heavyball else torch.optim
+    step = getattr(module, optimizer)(params, **kwargs).step
     for _ in range(warmup):
         step()
 
@@ -61,7 +77,7 @@ def main(optimizer: str = "AdamW", dtype: DType = DType.float32, shape: list[str
         times.append((perf_counter() - start) / steps)
 
     print(f"{len(shapes)} tensors, {sum(prod(s) for s in shapes)} total params")
-    print(f'Median Time: {np.median(times) * 1e6:.3f}µs')
+    print(f"Median Time: {np.median(times) * 1e6:.3f}µs")
 
 if __name__ == "__main__":
     app()

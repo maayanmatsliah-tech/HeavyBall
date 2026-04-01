@@ -3,20 +3,22 @@
 ## Highlights
 
 * Simplified public API: `Foreach*` prefixes removed, short names are now the canonical classes
-* New optimizers: `HyperBallAdamW`, `MuonAdamW`, `PSGDPRO`
+* New optimizers: `HyperBallAdamW`, `MuonAdamW`, `LATHER`, `PSGDPRO`
+* `LATHER` expands to "Lie-group Adam Through Harmonic Eigenbasis Rotations"
 * `Route`-based param dispatch replaces manual `SplitOpt` for mixed-architecture optimizers
 * `ScheduleFree` and `MSAM` mode switches are now idempotent (`eval()` twice is safe)
 * Higher-precision PSGD preconditioner updates
 * New `consume_grad` option: `step()` clears `p.grad` after consuming it by default; set `consume_grad=False` to keep gradients attached after the step
+* `orig_shapes` is now an explicit documented optimizer argument; use `capture_param_shapes(...)` before wrapping models with sharding backends that do not preserve original parameter shapes
 * `torch.compile`-friendly step with automatic eager fallback for init/preconditioning
 
 ---
 
 ## Release benchmarks
 
-HeavyBall 3 was benchmarked against HeavyBall 2 and `torch.optim` with
-[`benchmarks/bench_optimizer_step.py`](../benchmarks/bench_release_optimizers.py), with compiled AdamW step latency
-dropping from 10.63 ms in HeavyBall 2 to 4.15 ms in HeavyBall 3.
+HeavyBall 3.0.0 was benchmarked against HeavyBall 2.0.0 and `torch.optim` with
+[`benchmarks/bench_release_optimizers.py`](../benchmarks/bench_release_optimizers.py), with compiled AdamW step latency
+dropping from 10.63 ms in HeavyBall 2.0.0 to 4.15 ms in HeavyBall 3.0.0, a 2.56x speedup.
 
 ## Breaking changes
 
@@ -83,6 +85,18 @@ These raise `TypeError` if passed. They were either unused or replaced by better
 | `inverse_free` | PSGDKron | Use `quad_torch` or PSGDPRO for inverse-free PSGD        |
 | `adaptive` | PSGDKron | Removed                                                  |
 
+### Helper sampler kwargs
+
+These compatibility kwargs were removed from `heavyball.helpers` samplers and now raise
+`TypeError`.
+
+| Class | Removed kwargs |
+|---|---|
+| `BoTorchSampler` | `constraints_func`, `consider_running_trials` |
+| `HEBOSampler` | `constant_liar` |
+| `ImplicitNaturalGradientSampler` | `lr`, `warn_independent_sampling` |
+| `AutoSampler` | `constraints_func` |
+
 ### Chainable API renames
 
 | 2.x name | 3.x name |
@@ -97,6 +111,9 @@ These raise `TypeError` if passed. They were either unused or replaced by better
 * **Gradient lifetime**: `consume_grad=True` is available on all optimizers and clears `p.grad`
   during `step()` once the gradient has been consumed. Set `consume_grad=False` if your code
   reads gradients after stepping or relies on them remaining attached.
+* **Sharded parameter shapes**: Built-in optimizers now expose `orig_shapes` explicitly. Use
+  `capture_param_shapes()` before wrapping parameters if your sharding backend hides original
+  shapes.
 * **PSGD dampening**: `dampen_grad` default changed from `2**-13` to `1e-9`, and dampening
   epsilon uses `torch.finfo(float32).eps` regardless of input dtype. This improves
   preconditioner accuracy but may change convergence behavior.
@@ -126,3 +143,4 @@ The `foreach` → `multi_tensor` key rename in param groups is handled automatic
 6. Migrate checkpoints: `python scripts/migrate_optimizer_state.py <ckpt> heavyball.<Optimizer>`
 7. If you relied on `eval(); eval()` toggling back to train mode, update your code
 8. If your training loop reads `p.grad` after `step()`, pass `consume_grad=False`
+9. Remove obsolete compatibility kwargs from `heavyball.helpers` samplers

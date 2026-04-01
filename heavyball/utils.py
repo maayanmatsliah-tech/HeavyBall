@@ -106,7 +106,17 @@ def decorator_knowngood(func: Callable, fullgraph: bool = True):
     return _fn
 
 
+def decorator_no_fullgraph(func: Callable):
+    return decorator_knowngood(func, fullgraph=False)
+
+
 einsum_base = string.ascii_lowercase
+
+no_compile_qr = torch.compiler.disable(torch.linalg.qr)
+no_compile_solve = torch.compiler.disable(torch.linalg.solve)
+no_compile_svd = torch.compiler.disable(torch.linalg.svd)
+no_compile_lobpcg = torch.compiler.disable(torch.lobpcg)
+no_compile_solve_triangular = torch.compiler.disable(torch.linalg.solve_triangular)
 
 
 @decorator_knowngood
@@ -770,7 +780,7 @@ def _compilable_grafting(magnitude, direction):
     return direction * (magnitude.norm() / direction.norm().clamp(min=1e-6))
 
 
-@decorator_knowngood
+@decorator_no_fullgraph
 def _compilable_orthogonal_(x: Tensor, mode: str | ZerothPowerMode, out: Tensor | None, scale_mode: str):
     if not isinstance(mode, ZerothPowerMode):
         mode = ZerothPowerMode(mode)
@@ -783,12 +793,12 @@ def _compilable_orthogonal_(x: Tensor, mode: str | ZerothPowerMode, out: Tensor 
     elif mode == ZerothPowerMode.legacy_newtonschulz:
         y = legacy_zeropower_via_newtonschulz5(x, 5)
     elif mode == ZerothPowerMode.qr:
-        y = torch.linalg.qr(promote(x)).Q
+        y = no_compile_qr(promote(x)).Q
     elif mode == ZerothPowerMode.svd:
-        u, _s, vt = torch.linalg.svd(promote(x))
+        u, _s, vt = no_compile_svd(promote(x))
         y = u @ vt
     elif mode == ZerothPowerMode.legacy_svd:
-        u, _s, vt = torch.linalg.svd(promote(x))
+        u, _s, vt = no_compile_svd(promote(x))
         y = u @ vt.T
     else:
         raise NotImplementedError(f"Unknown zeroth_power_mode: {mode}")
@@ -815,7 +825,7 @@ def _compilable_scatter_set(target, source, index):
     target[:] = source.contiguous()[index].reshape_as(target)
 
 
-# @decorator_knowngood
+@decorator_no_fullgraph
 def get_orthogonal_matrix_QR(GG: List[Tensor], Q: List[Tensor], *exp_avg: Tensor):
     """
     Computes the eigenbases of the preconditioner using one round of power iteration
@@ -911,7 +921,7 @@ def _transform_projected_state(old_qs: List[Optional[Tensor]], new_qs: List[Opti
         copy_stochastic_(state, new)
 
 
-@decorator_knowngood
+@decorator_no_fullgraph
 def get_psgd_eigenbasis(Q: List[Tensor], prev: Optional[List[Optional[Tensor]]] = None):
     prev = [None] * len(Q) if prev is None else prev
     out = []
@@ -921,22 +931,31 @@ def get_psgd_eigenbasis(Q: List[Tensor], prev: Optional[List[Optional[Tensor]]] 
             out.append(None)
             continue
 
-        basis = msign(promote(q)).mT.to(dtype=q.dtype)
-        projected = promote(q) @ promote(basis)
-        sort_idx = torch.argsort(compiled_einsum("ij,ij->j", projected, projected), descending=True)
-        basis = basis.index_select(1, sort_idx)
+        q32 = promote(q)
+        if old_basis is None:
+            old_basis32 = torch.eye(q.shape[-1], device=q.device, dtype=q32.dtype)
+        else:
+            old_basis32 = promote(old_basis)
 
-        if old_basis is not None:
-            signs = compiled_einsum("ij,ij->j", promote(old_basis), promote(basis))
-            signs = torch.where(signs < 0, -torch.ones_like(signs), torch.ones_like(signs)).to(dtype=basis.dtype)
-            basis = basis * signs.view(1, -1)
+        Y = q32.mT @ (q32 @ old_basis32)
+        basis_raw = no_compile_qr(Y, mode="reduced").Q.to(dtype=q.dtype)
+        projected = q32 @ promote(basis_raw)
+        sort_idx = torch.argsort(compiled_einsum("ij,ij->j", projected, projected), descending=True)
+        basis_raw = basis_raw.index_select(1, sort_idx)
+
+        if old_basis is None:
+            basis = basis_raw
+        else:
+            signs = compiled_einsum("ij,ij->j", old_basis32, promote(basis_raw))
+            signs = torch.where(signs < 0, -torch.ones_like(signs), torch.ones_like(signs)).to(dtype=basis_raw.dtype)
+            basis = basis_raw * signs.view(1, -1)
 
         out.append(basis)
 
     return out
 
 
-@decorator_knowngood
+@decorator_no_fullgraph
 def update_psgd_eigenbasis(Q: List[Tensor], Q_basis: List[Optional[Tensor]], *states: Tensor):
     new_basis = get_psgd_eigenbasis(Q, Q_basis)
     _transform_projected_state(Q_basis, new_basis, *states)
@@ -2769,14 +2788,13 @@ def psgd_calc_A_and_conjB(G: Tensor, Q, conjB: Tensor | None):  # conjB ("V", "v
         conjB = torch.randn_like(G)
     exprA = cached_precond_grad_expr(ndim_tuple(Q), G.ndim)  # calcA expr and cached precond expr are the same
     A = casted_einsum(exprA, *Q, G)
-    solve = torch.compiler.disable(torch.linalg.solve_triangular)
     transposed_shape = original_shape = conjB.shape
     prev_i = -1
     qs, conjB = _psgd_calc_scalars_(Q, conjB)
     for i, tri_q in qs:
         conjB, transposed_shape = _reshape_conjB(conjB, transposed_shape, original_shape, prev_i, i)
         prev_i = i
-        conjB = solve(tri_q, conjB, upper=True, left=False)
+        conjB = no_compile_solve_triangular(tri_q, conjB, upper=True, left=False)
     conjB, _ = _reshape_conjB(conjB, transposed_shape, original_shape, prev_i, -1)
     return A, conjB
 
@@ -2785,7 +2803,7 @@ def max_singular_value_exact(A, use_lobpcg: bool = False):
     try:
         if use_lobpcg:
             A = A @ A.T
-            eigval, _ = torch.compiler.disable(torch.lobpcg)(A, k=1, largest=True)
+            eigval, _ = no_compile_lobpcg(A, k=1, largest=True)
             return eigval[0].sqrt()
         else:
             return torch.linalg.svd(promote(A), driver="gesvdj")[1].max().to(A.dtype)  # == linalg.matrix_norm(A, ord=2)
@@ -3071,7 +3089,7 @@ def _update_lb(ell: Tensor, lb_state: Tensor, beta: Tensor) -> Tensor:
     return ell
 
 
-@functools.partial(decorator_knowngood, fullgraph=False)
+@decorator_no_fullgraph
 def psgd_update_precond(
     G: Tensor,
     precond_lr: float,

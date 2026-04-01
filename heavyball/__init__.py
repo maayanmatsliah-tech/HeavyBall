@@ -1007,10 +1007,10 @@ class PSGDKron(PSGDBase):
         )
 
 
-class PSGDKronAdam(PSGDBase):
+class LATHER(PSGDBase):
     """
-    Adam in the approximate eigenspace induced by the PSGD-Kron preconditioner.
-    Uses cached orthogonal factors from the PSGD preconditioner, applies Adam in that basis, then maps back.
+    Lie-group Adam Through Harmonic Eigenbasis Rotations.
+    Runs Adam in the approximate eigenspace induced by the PSGD-Kron preconditioner, then maps back.
     """
 
     def __init__(
@@ -1059,7 +1059,7 @@ class PSGDKronAdam(PSGDBase):
     ):
         self._build_psgd_defaults(
             {**locals(), "exp_avg_input": False},
-            fns=(C.scale_by_psgd_eigen_adam,),
+            fns=(C.scale_by_lather,),
         )
 
 

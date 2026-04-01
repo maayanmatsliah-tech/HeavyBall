@@ -4,7 +4,7 @@
 
 HeavyBall is an optimizer library for PyTorch where every optimizer is assembled from composable, compiled building
 blocks. It includes API-compatible replacements for `torch.optim.AdamW`, `SGD`, and `RMSprop`, alongside Muon, SOAP (
-Shampoo), PSGD (Kronecker), ADOPT, Schedule-Free, LaProp, and others.
+Shampoo), PSGD (Kronecker), LATHER, ADOPT, Schedule-Free, LaProp, and others.
 
 The building blocks, over 100 functions in [`utils.py`](heavyball/utils.py), are each compiled with
 `torch.compile(fullgraph=True)` and fuse into Triton kernels. Features like MARS gradient correction,
@@ -29,6 +29,12 @@ opt = AdamW(model.parameters(), lr=1e-3)
 from heavyball import SOAP  # Shampoo-based preconditioning
 
 opt = SOAP(model.parameters(), lr=3e-3)
+```
+
+```python
+from heavyball import LATHER  # Lie-group Adam Through Harmonic Eigenbasis Rotations
+
+opt = LATHER(model.parameters(), lr=1e-3)
 ```
 
 ```python
@@ -76,7 +82,7 @@ Muon, MuonAdamW, MuonLaProp, HyperBallAdamW, OrthoLaProp, LaPropOrtho
 SOAP, SOAPNAdam, SOAPAdEMAMix, SOLP
 
 **PSGD (Kronecker):**
-PSGDKron, PSGDPRO
+PSGDKron, LATHER, PSGDPRO
 
 **PSGD (Low-Rank):**
 PSGDLRA

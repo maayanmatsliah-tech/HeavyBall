@@ -1184,7 +1184,7 @@ def _update_psgd_precond(
     running_lower_bound,
     step,
     prob: Optional[callable] = None,
-) -> Optional[Tensor]:
+) -> None:
     if prob is None:
         prob = utils.precond_update_prob_schedule()
 
@@ -1196,7 +1196,7 @@ def _update_psgd_precond(
     else:
         vector, hessian_vector = utils.take_temporary(group, param, "vector", "hessian_vector")
 
-    precond = utils.psgd_update_precond(
+    utils.psgd_update_precond(
         hessian_vector,
         group["precond_lr"],
         Q,
@@ -1215,10 +1215,8 @@ def _update_psgd_precond(
         float_prob = prob(group["step"])
     group["is_cached"] = should_use_cache = cached and float_prob < 0.5
 
-    if precond is not None:
-        return precond
     if not should_use_cache or not cached:
-        return None
+        return
 
     Q_resolved = utils.line_to_triu(Q) if group["store_triu_as_line"] else Q
     for i, (c_, q_) in enumerate(zip(Q_cache, Q_resolved)):
@@ -1233,7 +1231,7 @@ def _update_psgd_precond(
             torch.matmul(q_.T, q_, out=c_)
         else:
             torch.mul(q_, q_, out=c_)
-    return None
+    return
 
 
 def _update_psgd_pro_precond(
@@ -1399,7 +1397,7 @@ def scale_by_psgd(
 @zero_guard("exp_avg", "exp_avg_sq")
 @general_guard("Q", "Q_basis", "running_lower_bound", "step", init_fn=_init_psgd_eigen_kron, skip_first=False)
 @no_state_no_multi_tensor
-def scale_by_psgd_eigen_adam(
+def scale_by_lather(
     group,
     update,
     grad,

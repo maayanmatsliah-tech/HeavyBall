@@ -21,21 +21,25 @@ Requires PyTorch >= 2.2.
 
 ```python
 from heavyball import AdamW
+
 opt = AdamW(model.parameters(), lr=1e-3)
 ```
 
 ```python
 from heavyball import SOAP  # Shampoo-based preconditioning
+
 opt = SOAP(model.parameters(), lr=3e-3)
 ```
 
 ```python
 from heavyball import Muon
+
 opt = Muon(model.parameters(), lr=0.02, ecc="bf16+8", mars=True, caution=True)
 ```
 
 ```python
 from heavyball import SplitOpt, Muon, AdamW
+
 opt = SplitOpt([
     {'params': matrices, 'optimizer': Muon, 'lr': 0.02},
     {'params': vectors, 'optimizer': AdamW, 'lr': 1e-3},
@@ -44,6 +48,8 @@ opt = SplitOpt([
 
 The API matches `torch.optim`, with the same parameter groups, same `step()`/`zero_grad()` interface. See [
 `examples/`](examples/) for training scripts.
+By default, HeavyBall consumes gradients during `step()` and clears `p.grad` once it has used it. Pass
+`consume_grad=False` if your training loop needs gradients to remain attached after the optimizer step.
 
 ## Optimizers
 
@@ -160,9 +166,11 @@ updates.
 ```python
 import heavyball.chainable as C
 
+
 def graft(outputs, eps=1e-8):
     adam_update, sgd_update = outputs
     return [s * (a.norm() / s.norm().add(eps)) for a, s in zip(adam_update, sgd_update)]
+
 
 class GraftedAdam(C.BaseOpt):
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
@@ -201,13 +209,17 @@ Custom optimizers built via the chainable API inherit this behavior.
 
 ## Benchmarks
 
-HeavyBall includes a diagnostic benchmark suite via [LightBench](https://github.com/HomebrewML/LightBench) that tests
+HeavyBall includes a benchmark suite via [LightBench](https://github.com/HomebrewML/LightBench) that tests
 for silent optimizer failures across difficulty levels. Results and methodology are documented
 in [docs/benchmark.md](docs/benchmark.md).
 
+[`benchmarks/bench_release_optimizers.py`](benchmarks/bench_release_optimizers.py) measures optimizer latency, with
+AdamW step times dropping from 10.63 ms in HeavyBall 2 to 4.15 ms in HeavyBall 3.
+
 ## Migrating
 
-**From 2.x** See the [3.0.0 migration guide](docs/heavyball3.md) for renamed classes, removed kwargs, and checkpoint conversion.
+**From 2.x** See the [3.0.0 migration guide](docs/heavyball3.md) for renamed classes, removed kwargs, and checkpoint
+conversion.
 
 **From 1.x** See the [2.0.0 migration notes](docs/heavyball2.md), then follow the 3.0.0 guide.
 

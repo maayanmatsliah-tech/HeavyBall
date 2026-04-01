@@ -7,9 +7,16 @@
 * `Route`-based param dispatch replaces manual `SplitOpt` for mixed-architecture optimizers
 * `ScheduleFree` and `MSAM` mode switches are now idempotent (`eval()` twice is safe)
 * Higher-precision PSGD preconditioner updates
+* New `consume_grad` option: `step()` clears `p.grad` after consuming it by default; set `consume_grad=False` to keep gradients attached after the step
 * `torch.compile`-friendly step with automatic eager fallback for init/preconditioning
 
 ---
+
+## Release benchmarks
+
+HeavyBall 3 was benchmarked against HeavyBall 2 and `torch.optim` with
+[`benchmarks/bench_release_optimizers.py`](../benchmarks/bench_release_optimizers.py), with compiled AdamW step latency
+dropping from 10.63 ms in HeavyBall 2 to 4.15 ms in HeavyBall 3.
 
 ## Breaking changes
 
@@ -87,6 +94,9 @@ These raise `TypeError` if passed. They were either unused or replaced by better
 * **ScheduleFree / MSAM `eval()` / `train()`**: Now idempotent. Calling `eval()` twice no
   longer flips back to train mode. Both methods accept a `mode` argument matching
   `nn.Module.train(mode)` and return `self`.
+* **Gradient lifetime**: `consume_grad=True` is available on all optimizers and clears `p.grad`
+  during `step()` once the gradient has been consumed. Set `consume_grad=False` if your code
+  reads gradients after stepping or relies on them remaining attached.
 * **PSGD dampening**: `dampen_grad` default changed from `2**-13` to `1e-9`, and dampening
   epsilon uses `torch.finfo(float32).eps` regardless of input dtype. This improves
   preconditioner accuracy but may change convergence behavior.
@@ -115,3 +125,4 @@ The `foreach` → `multi_tensor` key rename in param groups is handled automatic
 5. Replace `Branch(...)` with `Parallel(...)` in custom chainable code
 6. Migrate checkpoints: `python scripts/migrate_optimizer_state.py <ckpt> heavyball.<Optimizer>`
 7. If you relied on `eval(); eval()` toggling back to train mode, update your code
+8. If your training loop reads `p.grad` after `step()`, pass `consume_grad=False`

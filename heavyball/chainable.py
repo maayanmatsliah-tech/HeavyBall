@@ -920,8 +920,10 @@ def _init_psgd_eigen_kron(state, group, update, grad, param, prob: Optional[call
     state["running_lower_bound"] = [torch.zeros((1,), device=q.device, dtype=torch.float64) for q in Q]
     state["step"] = torch.zeros((), device=param.device, dtype=torch.float64)
 
+    line, group["store_triu_as_line"] = group["store_triu_as_line"], False
     _update_psgd_precond(False, None, group, param, update, Q, state["running_lower_bound"], state["step"], prob)
-    state["Q"] = utils.triu_to_line(Q) if group["store_triu_as_line"] else Q
+    group["store_triu_as_line"] = line
+    state["Q"] = utils.triu_to_line(Q) if line else Q
     state["Q_basis"] = utils.init_psgd_eigenbasis(Q)
 
 

@@ -932,9 +932,7 @@ def init_psgd_eigenbasis(Q: List[Tensor]):
             continue
 
         q32 = promote(q)
-        evals, basis = no_compile_eigh(q32.mT @ q32)
-        sort_idx = torch.argsort(evals, descending=True)
-        out.append(basis.index_select(1, sort_idx).to(dtype=q.dtype))
+        out.append(_stable_symmetric_basis(q32.mT @ q32, out_device=q.device, out_dtype=q.dtype))
 
     return out
 
@@ -973,7 +971,48 @@ def update_psgd_eigenbasis(Q: List[Tensor], Q_basis: List[Tensor], *states: Tens
     _transform_projected_state(Q_basis, new_basis, *states)
 
     for i, (old_basis, new_basis_i) in enumerate(zip(Q_basis, new_basis)):
+        if old_basis is None:  # happens only if ndim < 2
+            continue
         copy_stochastic_(old_basis, new_basis_i)
+
+
+def _stable_symmetric_basis(
+    m: Tensor,
+    max_eps: float = 1e-3,
+    min_eps: float = 1e-30,
+    *,
+    out_device=None,
+    out_dtype=None,
+):
+    out_device = m.device if out_device is None else out_device
+    out_dtype = m.dtype if out_dtype is None else out_dtype
+    m = promote(m.data)
+
+    eps = min_eps
+    while True:
+        try:
+            eye = torch.eye(m.shape[0], device=m.device, dtype=m.dtype)
+            _eigval, eigvec = no_compile_eigh(m + eps * eye)
+            return torch.flip(eigvec, [1]).to(device=out_device, dtype=out_dtype)
+        except torch.OutOfMemoryError:
+            if m.device.type == "cpu":
+                raise
+            if torch.cuda.is_available():
+                torch.cuda.synchronize(m.device)
+            clean()
+            m = m.cpu()
+        except RuntimeError as e:
+            if torch.cuda.is_available() and ("CUDA" in str(e) or "illegal memory access" in str(e)):
+                torch.cuda.synchronize(m.device)
+                clean()
+                m = m.cpu()
+            elif m.dtype != torch.double:
+                m = m.double()
+            elif eps < max_eps:
+                eps = eps ** (2 / 3)
+            else:
+                raise
+        clean()
 
 
 def get_orthogonal_matrix(mat, max_eps: float = 1e-3, min_eps: float = 1e-30):
@@ -987,38 +1026,7 @@ def get_orthogonal_matrix(mat, max_eps: float = 1e-3, min_eps: float = 1e-30):
             final.append(None)
             continue
 
-        device, dtype = m.device, m.dtype
-        m = promote(m.data)
-
-        eps = min_eps
-        while True:
-            try:
-                eye = torch.eye(m.shape[0], device=m.device, dtype=m.dtype)
-                _eigval, eigvec = torch.linalg.eigh(m + eps * eye)
-                eigvec = eigvec.to(device=device, dtype=dtype)
-                break
-            except torch.OutOfMemoryError:
-                if m.device.type == "cpu":
-                    raise
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize(m.device)
-                clean()
-                m = m.cpu()
-            except RuntimeError as e:
-                if torch.cuda.is_available() and ("CUDA" in str(e) or "illegal memory access" in str(e)):
-                    torch.cuda.synchronize(m.device)
-                    clean()
-                    m = m.cpu()
-                elif m.dtype != torch.double:
-                    m = m.double()
-                elif eps < max_eps:
-                    eps = eps ** (2 / 3)
-                else:
-                    raise
-            clean()
-
-        eigvec = torch.flip(eigvec, [1])
-        final.append(eigvec)
+        final.append(_stable_symmetric_basis(m, max_eps=max_eps, min_eps=min_eps))
 
     return final
 

@@ -1,6 +1,7 @@
 from enum import StrEnum
 from math import prod
 from time import perf_counter
+
 import numpy as np
 import torch
 import typer
@@ -78,6 +79,7 @@ def main(
 
     print(f"{len(shapes)} tensors, {sum(prod(s) for s in shapes)} total params")
     print(f"Median Time: {np.median(times) * 1e6:.3f}µs")
+
 
 if __name__ == "__main__":
     app()

@@ -910,6 +910,7 @@ def _transform_projected_state(old_qs: List[Optional[Tensor]], new_qs: List[Opti
         new = compiled_einsum(subscripts, promote(state), *old_basis, *new_basis)
         copy_stochastic_(state, new)
 
+
 @decorator_knowngood
 def get_psgd_eigenbasis(Q: List[Tensor], prev: Optional[List[Optional[Tensor]]] = None):
     prev = [None] * len(Q) if prev is None else prev
@@ -933,6 +934,7 @@ def get_psgd_eigenbasis(Q: List[Tensor], prev: Optional[List[Optional[Tensor]]] 
         out.append(basis)
 
     return out
+
 
 @decorator_knowngood
 def update_psgd_eigenbasis(Q: List[Tensor], Q_basis: List[Optional[Tensor]], *states: Tensor):
@@ -1388,7 +1390,7 @@ class StatefulOptimizer(torch.optim.Optimizer):
         "fallback_to_finite_differences",
         "hvp_interval",
         "hessian_approx",
-        "consume_grad"
+        "consume_grad",
     )
 
     def __init__(self, params, defaults, use_ema: bool = False):

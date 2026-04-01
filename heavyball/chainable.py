@@ -917,10 +917,12 @@ def _init_psgd_eigen_kron(state, group, update, grad, param, prob: Optional[call
         tmp.get("vector"),
         dtype=getattr(torch, group["q_dtype"]),
     )
-    state["Q"] = utils.triu_to_line(Q) if group["store_triu_as_line"] else Q
-    state["Q_basis"] = utils.get_psgd_eigenbasis(Q)
     state["running_lower_bound"] = [torch.zeros((1,), device=q.device, dtype=torch.float64) for q in Q]
     state["step"] = torch.zeros((), device=param.device, dtype=torch.float64)
+
+    _update_psgd_precond(False, None, group, param, update, Q, state["running_lower_bound"], state["step"], prob)
+    state["Q"] = utils.triu_to_line(Q) if group["store_triu_as_line"] else Q
+    state["Q_basis"] = utils.init_psgd_eigenbasis(Q)
 
 
 def _init_psgd_pro_kron(state, group, update, grad, param, cached: bool = False, prob: Optional[callable] = None):
@@ -1395,7 +1397,7 @@ def scale_by_psgd(
 @SqueezeGrad
 @PrecondGradAccumGuard
 @zero_guard("exp_avg", "exp_avg_sq")
-@general_guard("Q", "Q_basis", "running_lower_bound", "step", init_fn=_init_psgd_eigen_kron, skip_first=False)
+@general_guard("Q", "Q_basis", "running_lower_bound", "step", init_fn=_init_psgd_eigen_kron, skip_first=True)
 @no_state_no_multi_tensor
 def scale_by_lather(
     group,
@@ -1411,11 +1413,7 @@ def scale_by_lather(
     step: Tensor,
     prob: Optional[callable] = None,
 ):
-    basis = Q_basis
-    if basis is None:
-        basis = utils.get_psgd_eigenbasis(utils.line_to_triu(Q) if group["store_triu_as_line"] else Q)
-
-    projected = utils.project(utils.promote(update), basis, False)
+    projected = utils.project(utils.promote(update), Q_basis, False)
     precond = utils.adam_(
         exp_avg,
         exp_avg_sq,
@@ -1425,7 +1423,7 @@ def scale_by_lather(
         group["step"],
         group["eps"],
     )[0]
-    precond = utils.project(precond, basis, True)
+    precond = utils.project(precond, Q_basis, True)
 
     if group["is_preconditioning"]:
         _update_psgd_precond(False, None, group, param, update_to_precond, Q, running_lower_bound, step, prob)

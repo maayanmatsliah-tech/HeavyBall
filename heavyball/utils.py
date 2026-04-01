@@ -113,6 +113,7 @@ def decorator_no_fullgraph(func: Callable):
 einsum_base = string.ascii_lowercase
 
 no_compile_qr = torch.compiler.disable(torch.linalg.qr)
+no_compile_eigh = torch.compiler.disable(torch.linalg.eigh)
 no_compile_solve = torch.compiler.disable(torch.linalg.solve)
 no_compile_svd = torch.compiler.disable(torch.linalg.svd)
 no_compile_lobpcg = torch.compiler.disable(torch.lobpcg)
@@ -922,49 +923,57 @@ def _transform_projected_state(old_qs: List[Optional[Tensor]], new_qs: List[Opti
 
 
 @decorator_no_fullgraph
-def get_psgd_eigenbasis(Q: List[Tensor], prev: Optional[List[Optional[Tensor]]] = None):
-    prev = [None] * len(Q) if prev is None else prev
+def init_psgd_eigenbasis(Q: List[Tensor]):
+    out = []
+
+    for q in Q:
+        if q.ndim < 2:
+            out.append(None)
+            continue
+
+        q32 = promote(q)
+        evals, basis = no_compile_eigh(q32.mT @ q32)
+        sort_idx = torch.argsort(evals, descending=True)
+        out.append(basis.index_select(1, sort_idx).to(dtype=q.dtype))
+
+    return out
+
+
+@decorator_no_fullgraph
+def get_psgd_eigenbasis(Q: List[Tensor], prev: List[Optional[Tensor]]):
     out = []
 
     for q, old_basis in zip(Q, prev):
         if q.ndim < 2:
             out.append(None)
             continue
+        if old_basis is None:
+            raise ValueError(
+                "get_psgd_eigenbasis requires a previous basis for matrix blocks; use init_psgd_eigenbasis"
+            )
 
         q32 = promote(q)
-        if old_basis is None:
-            old_basis32 = torch.eye(q.shape[-1], device=q.device, dtype=q32.dtype)
-        else:
-            old_basis32 = promote(old_basis)
-
+        old_basis32 = promote(old_basis)
         Y = q32.mT @ (q32 @ old_basis32)
         basis_raw = no_compile_qr(Y, mode="reduced").Q.to(dtype=q.dtype)
         projected = q32 @ promote(basis_raw)
         sort_idx = torch.argsort(compiled_einsum("ij,ij->j", projected, projected), descending=True)
         basis_raw = basis_raw.index_select(1, sort_idx)
-
-        if old_basis is None:
-            basis = basis_raw
-        else:
-            signs = compiled_einsum("ij,ij->j", old_basis32, promote(basis_raw))
-            signs = torch.where(signs < 0, -torch.ones_like(signs), torch.ones_like(signs)).to(dtype=basis_raw.dtype)
-            basis = basis_raw * signs.view(1, -1)
-
+        signs = compiled_einsum("ij,ij->j", old_basis32, promote(basis_raw))
+        signs = torch.where(signs < 0, -torch.ones_like(signs), torch.ones_like(signs)).to(dtype=basis_raw.dtype)
+        basis = basis_raw * signs.view(1, -1)
         out.append(basis)
 
     return out
 
 
 @decorator_no_fullgraph
-def update_psgd_eigenbasis(Q: List[Tensor], Q_basis: List[Optional[Tensor]], *states: Tensor):
+def update_psgd_eigenbasis(Q: List[Tensor], Q_basis: List[Tensor], *states: Tensor):
     new_basis = get_psgd_eigenbasis(Q, Q_basis)
     _transform_projected_state(Q_basis, new_basis, *states)
 
     for i, (old_basis, new_basis_i) in enumerate(zip(Q_basis, new_basis)):
-        if old_basis is None or new_basis_i is None:
-            Q_basis[i] = new_basis_i
-        else:
-            copy_stochastic_(old_basis, new_basis_i)
+        copy_stochastic_(old_basis, new_basis_i)
 
 
 def get_orthogonal_matrix(mat, max_eps: float = 1e-3, min_eps: float = 1e-30):

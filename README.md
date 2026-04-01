@@ -213,7 +213,7 @@ HeavyBall includes a benchmark suite via [LightBench](https://github.com/Homebre
 for silent optimizer failures across difficulty levels. Results and methodology are documented
 in [docs/benchmark.md](docs/benchmark.md).
 
-[`benchmarks/bench_release_optimizers.py`](benchmarks/bench_release_optimizers.py) measures optimizer latency, with
+[`benchmarks/bench_release_optimizers.py`](benchmarks/bench_optimizer_step.py) measures optimizer latency, with
 AdamW step times dropping from 10.63 ms in HeavyBall 2 to 4.15 ms in HeavyBall 3.
 
 ## Migrating

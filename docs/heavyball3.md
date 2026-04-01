@@ -15,7 +15,7 @@
 ## Release benchmarks
 
 HeavyBall 3 was benchmarked against HeavyBall 2 and `torch.optim` with
-[`benchmarks/bench_release_optimizers.py`](../benchmarks/bench_release_optimizers.py), with compiled AdamW step latency
+[`benchmarks/bench_optimizer_step.py`](../benchmarks/bench_release_optimizers.py), with compiled AdamW step latency
 dropping from 10.63 ms in HeavyBall 2 to 4.15 ms in HeavyBall 3.
 
 ## Breaking changes

@@ -92,6 +92,7 @@ _EXPECT_GATHER = {
     "OrthoLaProp",
     "LaPropOrtho",
     "PSGDKron",
+    "PSGDKronAdam",
     "PSGDLRA",
     "PSGDPRO",
     "SUDSAdamW",

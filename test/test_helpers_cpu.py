@@ -3,6 +3,7 @@ import math
 import numpy as np
 import optuna
 import pandas as pd
+import pytest
 import torch
 from optuna.distributions import FloatDistribution, IntDistribution
 from optuna.samplers import RandomSampler
@@ -79,6 +80,22 @@ def test_botorch_sampler_sample_relative_smoke(monkeypatch):
     suggestion = sampler.sample_relative(study, pending, search_space)
     assert "width" in suggestion
     assert 0.0 <= suggestion["width"] <= 1.0
+
+
+def test_helper_samplers_reject_removed_compat_kwargs():
+    search_space = {"width": FloatDistribution(0.0, 1.0)}
+
+    with pytest.raises(TypeError):
+        helpers.BoTorchSampler(search_space, consider_running_trials=True)
+
+    with pytest.raises(TypeError):
+        helpers.HEBOSampler(search_space, constant_liar=True)
+
+    with pytest.raises(TypeError):
+        helpers.ImplicitNaturalGradientSampler(search_space, warn_independent_sampling=False)
+
+    with pytest.raises(TypeError):
+        helpers.AutoSampler(search_space=search_space, constraints_func=lambda *_args: None)
 
 
 def test_hebo_sampler_observe_and_sample(monkeypatch):

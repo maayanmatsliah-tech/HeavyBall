@@ -529,7 +529,7 @@ def weight_decay_to_init(group, update, grad, param, init):
     return update
 
 
-def identity(state, group, update, grad, param):
+def identity(_state, _group, update, _grad, _param):
     return update
 
 

@@ -7,6 +7,8 @@ import torch.optim
 from . import chainable as C
 from . import utils
 
+ShapeMap = dict[int, tuple[int, ...]]
+
 
 class SGD(C.BaseOpt):
     def __init__(
@@ -27,6 +29,7 @@ class SGD(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -55,6 +58,7 @@ class AdamW(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -85,6 +89,7 @@ class NAdam(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -114,6 +119,7 @@ class AdEMAMix(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         if len(betas) != 3:
@@ -145,6 +151,7 @@ class UnscaledAdamW(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -174,6 +181,7 @@ class SUDSAdamW(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -202,6 +210,7 @@ class Scion(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         if lr < 0:
@@ -245,6 +254,7 @@ class AdamC(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         if max_lr is None:
@@ -285,6 +295,7 @@ class RMSprop(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -320,6 +331,7 @@ class HyperBallAdamW(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -362,6 +374,7 @@ class MuonAdamW(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -405,6 +418,7 @@ class SFAdamW(C.ScheduleFree):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -443,6 +457,7 @@ class MSAMLaProp(C.MSAM):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -478,6 +493,7 @@ class ADOPT(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -508,6 +524,7 @@ class Muon(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -551,6 +568,7 @@ class LaProp(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -579,6 +597,7 @@ class MuonLaProp(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -656,6 +675,7 @@ class SOAP(SOAPBase):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         self._build_soap_defaults(locals(), fns=(C.scale_by_soap,))
@@ -694,6 +714,7 @@ class SOAPNAdam(SOAPBase):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         self._build_soap_defaults(locals(), fns=(C.scale_by_soap_nadam,))
@@ -733,6 +754,7 @@ class SOAPAdEMAMix(SOAPBase):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         self._build_soap_defaults(locals(), fns=(C.scale_by_soap_ademamix,))
@@ -760,6 +782,7 @@ class SignLaProp(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -814,6 +837,7 @@ class SOLP(SOAPBase):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         self._build_soap_defaults(locals(), fns=(C.scale_by_soap_laprop,))
@@ -841,6 +865,7 @@ class OrthoLaProp(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -876,6 +901,7 @@ class LaPropOrtho(C.BaseOpt):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         params, defaults = C._build_defaults(locals())
@@ -899,7 +925,6 @@ class PSGDBase(C.BaseOpt):
     ):
         exp_avg_input = C.default(locals_dict.get("exp_avg_input", C.use_default), self.exp_avg_input)
         update_clipping = C.default(locals_dict["update_clipping"], default_update_clipping)
-
         locals_dict = {**locals_dict, "exp_avg_input": exp_avg_input, "update_clipping": update_clipping}
         params, defaults = C._build_defaults(locals_dict)
 
@@ -926,10 +951,6 @@ class PSGDKron(PSGDBase):
     Modified under Creative Commons Attribution 4.0 International
     Source available at https://github.com/evanatyourservice/kron_torch/blob/97a2b5ee8a1a4c29e4780bbf6c521e545189eff9/kron_torch/kron.py
     """
-
-    delayed: bool = False
-    cached: bool = False
-    exp_avg_input: bool = True
 
     def __init__(
         self,
@@ -958,7 +979,6 @@ class PSGDKron(PSGDBase):
         exp_avg_input: Optional[bool] = C.use_default,
         gradient_clipping: C.str_or_fn = C.use_default,
         update_clipping: C.str_or_fn = C.use_default,  #
-        ortho_method: Optional[str] = None,
         precond_grad_accum: bool = False,
         lower_bound_beta: float = 0.9,
         dampening: float = 1e-9,
@@ -976,6 +996,7 @@ class PSGDKron(PSGDBase):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         delayed = C.default(delayed, self.delayed)
@@ -986,15 +1007,68 @@ class PSGDKron(PSGDBase):
         )
 
 
+class PSGDKronAdam(PSGDBase):
+    """
+    Adam in the approximate eigenspace induced by the PSGD-Kron preconditioner.
+    Uses cached orthogonal factors from the PSGD preconditioner, applies Adam in that basis, then maps back.
+    """
+
+    def __init__(
+        self,
+        params,
+        lr=0.001,
+        beta=None,
+        betas=(0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay=0.0,
+        preconditioner_update_probability=C.use_default,
+        max_size_triangular=2048,
+        min_ndim_triangular=2,
+        memory_save_mode=None,
+        momentum_into_precond_update=True,
+        warmup_steps: int = 0,
+        merge_dims: bool = False,
+        split: bool = False,
+        store_triu_as_line: bool = True,
+        multi_tensor: bool = True,
+        q_dtype="float32",
+        storage_dtype: str = "float32",
+        mars: bool = False,
+        caution: bool = False,
+        mars_gamma: float = 0.0025,
+        gradient_clipping: C.str_or_fn = C.use_default,
+        update_clipping: C.str_or_fn = C.use_default,
+        precond_grad_accum: bool = False,
+        lower_bound_beta: float = 0.9,
+        dampening: float = 1e-9,
+        precond_update_power_iterations: int = 2,
+        precond_init_scale=None,
+        precond_init_scale_scale: float = 1,
+        precond_init_scale_power: Optional[float] = None,
+        precond_lr: float = 0.1,
+        finite_differences: bool = C.use_default,
+        fallback_to_finite_differences: bool = C.use_default,
+        hvp_interval: int = C.use_default,
+        hessian_approx: bool = C.use_default,
+        compile_step: bool = C.use_default,
+        promote: bool = C.use_default,
+        ecc: str | None = None,
+        param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
+        **kwargs,
+    ):
+        self._build_psgd_defaults(
+            {**locals(), "exp_avg_input": False},
+            fns=(C.scale_by_psgd_eigen_adam,),
+        )
+
+
 class PSGDPRO(PSGDBase):
     """
     PSGD with Q0.5EQ1.5 (PRO/Procrustes) preconditioner update.
     Solve-free alternative to standard PSGD-Kron (EQ method).
     Reference: https://github.com/lixilinx/psgd_torch
     """
-
-    cached: bool = False
-    exp_avg_input: bool = True
 
     def __init__(
         self,
@@ -1033,6 +1107,7 @@ class PSGDPRO(PSGDBase):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         cached = C.default(cached, self.cached)
@@ -1054,9 +1129,6 @@ class PSGDLRA(PSGDBase):
     parameters, while `multi_tensor=False` fits an independent per-parameter LRA. These are different
     algorithms and will produce different results.
     """
-
-    delayed: bool = False
-    exp_avg_input: bool = True
 
     def __init__(
         self,
@@ -1092,10 +1164,10 @@ class PSGDLRA(PSGDBase):
         promote: bool = C.use_default,
         ecc: str | None = None,
         param_ecc: str | None = None,
+        orig_shapes: ShapeMap | None = None,
         **kwargs,
     ):
         delayed = C.default(delayed, self.delayed)
-
         if rank is None:
             utils.warn_once(
                 f"{rank=}. It will be set to log2(param_count). This requires `params` to be of type list. Currently, {type(params)=}"

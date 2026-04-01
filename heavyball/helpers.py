@@ -178,7 +178,6 @@ class BoTorchSampler(SimpleAPIBaseSampler):
     """
     A significantly more efficient implementation of `BoTorchSampler` from Optuna - keeps more on the GPU / in torch
     The original is available at https://github.com/optuna/optuna-integration/blob/156a8bc081322791015d2beefff9373ed7b24047/optuna_integration/botorch/botorch.py under the MIT License
-    The original API is kept for backward compatibility, but many arguments are ignored to improve maintainability.
     """
 
     def __init__(
@@ -186,18 +185,12 @@ class BoTorchSampler(SimpleAPIBaseSampler):
         search_space: Optional[dict[str, BaseDistribution]] = None,
         *,
         candidates_func: Optional[Callable[..., Tensor]] = None,
-        constraints_func: Optional[Callable[..., Tensor]] = None,
         n_startup_trials: int = 10,
-        consider_running_trials: bool = False,
         independent_sampler: Optional[BaseSampler] = None,
         seed: int | None = None,
         device: torch.device | str | None = None,
         trial_chunks: int = 128,
     ):
-        if constraints_func is not None:
-            raise NotImplementedError("constraints_func is currently not supported by BoTorchSampler.")
-        if consider_running_trials:
-            raise NotImplementedError("consider_running_trials is currently not supported by BoTorchSampler.")
         if candidates_func is not None and not callable(candidates_func):
             raise TypeError("candidates_func must be callable.")
         self._candidates_func = candidates_func
@@ -206,7 +199,6 @@ class BoTorchSampler(SimpleAPIBaseSampler):
         self._seed = seed
         self.trial_chunks = trial_chunks
 
-        self._study_id: int | None = None
         self.search_space = {} if search_space is None else dict(search_space)
         if isinstance(device, str):
             device = torch.device(device)
@@ -643,12 +635,9 @@ class HEBOSampler(optunahub.samplers.SimpleBaseSampler, SimpleAPIBaseSampler):
         search_space: dict[str, BaseDistribution],
         *,
         seed: int | None = None,
-        constant_liar: bool = False,
         independent_sampler: BaseSampler | None = None,
     ) -> None:
         super().__init__(search_space, seed)
-        if constant_liar:
-            raise NotImplementedError("constant_liar is not supported by HEBOSampler.")
         self._hebo = HEBO(_convert_to_hebo_design_space(search_space), scramble_seed=self._seed)
         self._independent_sampler = independent_sampler or optuna.samplers.RandomSampler(seed=seed)
         self._rng = np.random.default_rng(seed)
@@ -716,7 +705,6 @@ class FastINGO:
         upper: np.ndarray,
         seed: Optional[int] = None,
         population_size: Optional[int] = None,
-        learning_rate: Optional[float] = None,
         last_n: int = 4096,
         loco_step_size: float = 0.1,
         device: str | None = None,
@@ -733,7 +721,6 @@ class FastINGO:
         self.last_n = last_n
         self.batchnorm_decay = batchnorm_decay
         self.score_decay = score_decay
-        self._learning_rate = learning_rate or 1.0 / np.sqrt(n_dimension)
         self._mean = torch.from_numpy(mean).to(device)
         self._sigma = torch.from_numpy(inv_sigma).to(device)
         self._lower = torch.from_numpy(lower).to(device)
@@ -832,20 +819,16 @@ class ImplicitNaturalGradientSampler(BaseSampler):
         search_space: Dict[str, BaseDistribution],
         x0: Optional[Dict[str, Any]] = None,
         sigma0: Optional[float] = None,
-        lr: Optional[float] = None,
         n_startup_trials: int = 1,
         independent_sampler: Optional[BaseSampler] = None,
-        warn_independent_sampling: bool = True,
         seed: Optional[int] = None,
         population_size: Optional[int] = None,
     ) -> None:
         self.search_space = search_space
         self._x0 = x0
         self._sigma0 = sigma0
-        self._lr = lr
         self._independent_sampler = independent_sampler or optuna.samplers.RandomSampler(seed=seed)
         self._n_startup_trials = n_startup_trials
-        self._warn_independent_sampling = warn_independent_sampling
         self._optimizer: Optional[FastINGO] = None
         self._seed = seed
         self._population_size = population_size
@@ -906,7 +889,6 @@ class ImplicitNaturalGradientSampler(BaseSampler):
             return {}
 
         if len(search_space) == 1:
-            self._warn_independent_sampling = False
             return {}
 
         trans = SearchSpaceTransform(search_space)
@@ -949,7 +931,6 @@ class ImplicitNaturalGradientSampler(BaseSampler):
             upper=upper_bounds,
             seed=self._seed,
             population_size=population_size,
-            learning_rate=self._lr,
         )
 
     def sample_independent(
@@ -1022,10 +1003,7 @@ class AutoSampler(BaseSampler):
         search_space: Optional[dict[str, BaseDistribution]] = None,
         *,
         seed: int | None = None,
-        constraints_func: Optional[Callable[..., Any]] = None,
     ) -> None:
-        if constraints_func is not None:
-            raise NotImplementedError("constraints_func is not supported by AutoSampler.")
         if samplers is None:
             if search_space is None:
                 raise ValueError("AutoSampler requires a search_space when using the default sampler schedule.")
@@ -1036,7 +1014,6 @@ class AutoSampler(BaseSampler):
         self._rng = LazyRandomState(seed)
         self._random_sampler = RandomSampler(seed=seed)
         self._thread_local_sampler = ThreadLocalSampler()
-        self._constraints_func = constraints_func
         self._completed_trials = 0
         self._current_index = -1
 

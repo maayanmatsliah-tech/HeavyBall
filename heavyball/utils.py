@@ -884,6 +884,68 @@ def get_orthogonal_matrix_QR(GG: List[Tensor], Q: List[Tensor], *exp_avg: Tensor
             copy_stochastic_(q, q_new)
 
 
+def _transform_projected_state(old_qs: List[Optional[Tensor]], new_qs: List[Optional[Tensor]], *states: Tensor):
+    if not states:
+        return
+
+    ref = states[0]
+    if ref is None or ref.dim() == 0:
+        return
+
+    assert ref.ndim < 13, "ref.ndim must be less than 13"
+    in_str = einsum_base[: ref.dim()]
+    out_str = einsum_base[ref.dim() : 2 * ref.dim()]
+
+    old_basis = ",".join([o + i for q, i, o in zip(old_qs, in_str, in_str.upper()) if q is not None])
+    if not old_basis:
+        return
+
+    new_basis = ",".join([i + o for q, i, o in zip(new_qs, in_str.upper(), out_str) if q is not None])
+    out_str = "".join([o if o in new_basis else i for i, o in zip(in_str, out_str)])
+    subscripts = f"{in_str},{old_basis},{new_basis}->{out_str}"
+    old_basis = [promote(q) for q in old_qs if q is not None]
+    new_basis = [promote(q) for q in new_qs if q is not None]
+
+    for state in states:
+        new = compiled_einsum(subscripts, promote(state), *old_basis, *new_basis)
+        copy_stochastic_(state, new)
+
+@decorator_knowngood
+def get_psgd_eigenbasis(Q: List[Tensor], prev: Optional[List[Optional[Tensor]]] = None):
+    prev = [None] * len(Q) if prev is None else prev
+    out = []
+
+    for q, old_basis in zip(Q, prev):
+        if q.ndim < 2:
+            out.append(None)
+            continue
+
+        basis = msign(promote(q)).mT.to(dtype=q.dtype)
+        projected = promote(q) @ promote(basis)
+        sort_idx = torch.argsort(compiled_einsum("ij,ij->j", projected, projected), descending=True)
+        basis = basis.index_select(1, sort_idx)
+
+        if old_basis is not None:
+            signs = compiled_einsum("ij,ij->j", promote(old_basis), promote(basis))
+            signs = torch.where(signs < 0, -torch.ones_like(signs), torch.ones_like(signs)).to(dtype=basis.dtype)
+            basis = basis * signs.view(1, -1)
+
+        out.append(basis)
+
+    return out
+
+@decorator_knowngood
+def update_psgd_eigenbasis(Q: List[Tensor], Q_basis: List[Optional[Tensor]], *states: Tensor):
+    new_basis = get_psgd_eigenbasis(Q, Q_basis)
+    _transform_projected_state(Q_basis, new_basis, *states)
+
+    for i, (old_basis, new_basis_i) in enumerate(zip(Q_basis, new_basis)):
+        if old_basis is None or new_basis_i is None:
+            Q_basis[i] = new_basis_i
+        else:
+            copy_stochastic_(old_basis, new_basis_i)
+
+
 def get_orthogonal_matrix(mat, max_eps: float = 1e-3, min_eps: float = 1e-30):
     """
     Computes the eigenbases of the preconditioner using torch.linalg.eigh decomposition.
@@ -1318,7 +1380,7 @@ class StatefulOptimizer(torch.optim.Optimizer):
     fallback_to_finite_differences: bool = True
     _fallback_enabled: bool = False
     hvp_interval: int = 1  # grad is faster initially, hvp later
-    auto_set_grad_to_none: bool = False
+    consume_grad: bool = True
 
     _INSTANCE_ATTRS = (
         "compile_step",
@@ -1326,6 +1388,7 @@ class StatefulOptimizer(torch.optim.Optimizer):
         "fallback_to_finite_differences",
         "hvp_interval",
         "hessian_approx",
+        "consume_grad"
     )
 
     def __init__(self, params, defaults, use_ema: bool = False):
@@ -1414,7 +1477,7 @@ class StatefulOptimizer(torch.optim.Optimizer):
                 grad = getattr(p, "grad", None)
                 if grad is None and skip_none:
                     continue
-                if self.auto_set_grad_to_none:
+                if self.consume_grad:
                     p.grad = None
                 yield p, grad
                 continue
@@ -1426,7 +1489,7 @@ class StatefulOptimizer(torch.optim.Optimizer):
             if grad is None and skip_none:
                 continue
 
-            if self.auto_set_grad_to_none:
+            if self.consume_grad:
                 p.grad = None
 
             if group.get("merge_dims", False) and not p.data.is_contiguous():

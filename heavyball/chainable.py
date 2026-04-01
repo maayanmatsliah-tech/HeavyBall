@@ -197,7 +197,7 @@ _REMOVED_KWARGS = frozenset(
 
 def _build_defaults(locals_dict):
     d = locals_dict.copy()
-    d.pop("self")
+    d.pop("self", None)
     params = d.pop("params")
     kwargs = d.pop("kwargs")
 
@@ -903,6 +903,26 @@ def _init_psgd_kron(state, group, update, grad, param, cached: bool = False, pro
     state["Q_cache"] = [torch.empty_like(q) for q in Q]
 
 
+def _init_psgd_eigen_kron(state, group, update, grad, param, prob: Optional[callable] = None):
+    tmp = utils.get_temporary(group, param) or {}
+    Q = utils.init_Q_exprs(
+        grad,
+        group["precond_init_scale"],
+        group["precond_init_scale_scale"],
+        group["precond_init_scale_power"],
+        group["max_size_triangular"],
+        group["min_ndim_triangular"],
+        group["memory_save_mode"],
+        tmp.get("hessian_vector"),
+        tmp.get("vector"),
+        dtype=getattr(torch, group["q_dtype"]),
+    )
+    state["Q"] = utils.triu_to_line(Q) if group["store_triu_as_line"] else Q
+    state["Q_basis"] = utils.get_psgd_eigenbasis(Q)
+    state["running_lower_bound"] = [torch.zeros((1,), device=q.device, dtype=torch.float64) for q in Q]
+    state["step"] = torch.zeros((), device=param.device, dtype=torch.float64)
+
+
 def _init_psgd_pro_kron(state, group, update, grad, param, cached: bool = False, prob: Optional[callable] = None):
     Q = utils.init_Q_exprs(
         grad,
@@ -1371,6 +1391,53 @@ def scale_by_psgd(
 ):
     _update_psgd_precond(cached, Q_cache, group, param, update_to_precond, Q, running_lower_bound, step, prob)
     return _cached_psgd_precond_grad(group, update, Q, Q_cache, grad)
+
+
+@needs_full_param
+@SqueezeGrad
+@PrecondGradAccumGuard
+@zero_guard("exp_avg", "exp_avg_sq")
+@general_guard("Q", "Q_basis", "running_lower_bound", "step", init_fn=_init_psgd_eigen_kron, skip_first=False)
+@no_state_no_multi_tensor
+def scale_by_psgd_eigen_adam(
+    group,
+    update,
+    grad,
+    param,
+    update_to_precond,
+    exp_avg,
+    exp_avg_sq,
+    Q,
+    Q_basis,
+    running_lower_bound: List[Tensor],
+    step: Tensor,
+    prob: Optional[callable] = None,
+):
+    basis = Q_basis
+    if basis is None:
+        basis = utils.get_psgd_eigenbasis(utils.line_to_triu(Q) if group["store_triu_as_line"] else Q)
+
+    projected = utils.project(utils.promote(update), basis, False)
+    precond = utils.adam_(
+        exp_avg,
+        exp_avg_sq,
+        projected,
+        utils.get_beta1(group),
+        utils.get_beta2(group),
+        group["step"],
+        group["eps"],
+    )[0]
+    precond = utils.project(precond, basis, True)
+
+    if group["is_preconditioning"]:
+        _update_psgd_precond(False, None, group, param, update_to_precond, Q, running_lower_bound, step, prob)
+        utils.update_psgd_eigenbasis(
+            utils.line_to_triu(Q) if group["store_triu_as_line"] else Q,
+            Q_basis,
+            exp_avg,
+        )
+
+    return precond
 
 
 @needs_full_param

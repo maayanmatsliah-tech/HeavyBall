@@ -4,7 +4,7 @@
 
 * Simplified public API: `Foreach*` prefixes removed, short names are now the canonical classes
 * New optimizers: `HyperBallAdamW`, `MuonAdamW`, `LATHER`, `PSGDPRO`
-* `LATHER` expands to "Lie-group Adam Through Harmonic Eigenbasis Rotations"
+* `LATHER`, "Lie-group Adam Through Harmonic Eigenbasis Rotations", performs AdamW in the PSGD eigenbasis
 * `Route`-based param dispatch replaces manual `SplitOpt` for mixed-architecture optimizers
 * `ScheduleFree` and `MSAM` mode switches are now idempotent (`eval()` twice is safe)
 * Higher-precision PSGD preconditioner updates
@@ -25,7 +25,7 @@ dropping from 10.63 ms in HeavyBall 2.0.0 to 4.15 ms in HeavyBall 3.0.0, a 2.56x
 ### Class renames
 
 Every `Foreach*` class is renamed to its short form. The old short-form aliases (which existed
-in 2.x) keep working — only the `Foreach*` imports break.
+in 2.x) keep working, only the `Foreach*` imports break.
 
 | 2.x name | 3.x name |
 |---|---|

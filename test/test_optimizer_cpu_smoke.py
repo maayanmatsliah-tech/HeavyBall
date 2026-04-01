@@ -1,9 +1,11 @@
+import functools
 import inspect
 
 import pytest
 import torch
 
 import heavyball
+from heavyball import chainable as C
 from heavyball.utils import StatefulOptimizer
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,7 +33,7 @@ def _optimizer_params():
                 )
             )
             continue
-        if name == "ForeachSOAPNAdam":
+        if name == "SOAPNAdam":
             params.append(
                 pytest.param(
                     name,
@@ -80,3 +82,44 @@ def test_optimizer_runs_on_cpu(opt_name, opt_cls):
         clone = opt_cls(model.parameters())
         clone.load_state_dict(state_dict)
         assert clone.state_dict()["state"].keys() == state_dict["state"].keys()
+
+
+def test_optimizer_keeps_constructor_compatibility_features():
+    param = torch.nn.Parameter(torch.randn(4, 4, device=DEVICE))
+
+    with pytest.warns(FutureWarning, match="renamed to 'multi_tensor'"):
+        optimizer = heavyball.AdamW([param], foreach=True)
+    assert optimizer.param_groups[0]["multi_tensor"] is True
+
+    with pytest.raises(TypeError, match="Removed in HeavyBall"):
+        heavyball.SOAP([param], normalize_grads=True)
+
+    with pytest.warns(UserWarning, match="Working with uncaptured keyword arguments"):
+        heavyball.AdamW([param], totally_fake=True)
+
+
+def test_optimizer_accepts_explicit_orig_shapes():
+    param = torch.nn.Parameter(torch.randn(4, 4, device=DEVICE))
+    shapes = heavyball.capture_param_shapes([param])
+    optimizer = heavyball.AdamW([param], orig_shapes=shapes)
+    assert "orig_shapes" not in optimizer.param_groups[0]
+
+
+def test_subclass_defaults_still_apply():
+    class ScheduledSOAP(heavyball.SOAP):
+        use_precond_schedule = True
+
+    class DelayedPSGDKron(heavyball.PSGDKron):
+        delayed = True
+        exp_avg_input = False
+
+    param = torch.nn.Parameter(torch.randn(4, 4, device=DEVICE))
+
+    soap = ScheduledSOAP([param])
+    assert "precondition_frequency" not in soap.param_groups[0]
+    assert "precond_scheduler" not in soap.param_groups[0]
+
+    psgd = DelayedPSGDKron([param])
+    first_fn = psgd.fns[0]
+    assert isinstance(first_fn, functools.partial)
+    assert first_fn.func.get_fn() is C.scale_by_delayed_psgd.get_fn()
